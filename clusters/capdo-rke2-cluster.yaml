@@ -33,16 +33,6 @@ spec:
           kind: DOMachineTemplate
           name: capdo-quickstart-control-plane
           namespace: fleet-default
-      - name: md-0
-        controlPlaneRole: false
-        etcdRole: false
-        workerRole: true
-        quantity: 3
-        machineConfigRef:
-          apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-          kind: DOMachineTemplate
-          name: capdo-quickstart-md-0
-          namespace: fleet-default
     machineGlobalConfig:
       cni: calico
       disable-kube-proxy: false

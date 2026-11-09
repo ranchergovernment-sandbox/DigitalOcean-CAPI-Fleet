@@ -1586,6 +1586,8 @@ spec:
         env:
         - name: DIGITALOCEAN_API_URL
           value: "https://api.devcloud.amd.com"
+        - name: HTTPS_PROXY
+          value: "https://api.devcloud.amd.com"
         - name: DIGITALOCEAN_ACCESS_TOKEN
           valueFrom:
             secretKeyRef:
