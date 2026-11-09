@@ -1581,8 +1581,8 @@ spec:
       containers:
       - args:
         - --leader-elect
-        - --diagnostics-address=:8444
-        - --insecure-diagnostics=false
+        - --metrics-bind-address=127.0.0.1:8080 --metrics-secure=false
+        - --metrics-secure=true
         env:
         - name: DIGITALOCEAN_API_URL
           value: "https://api.devcloud.amd.com"
