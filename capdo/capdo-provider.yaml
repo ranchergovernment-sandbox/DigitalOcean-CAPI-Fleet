@@ -1588,6 +1588,8 @@ spec:
         - --diagnostics-address=:8444
         - --insecure-diagnostics=false
         env:
+        - name: DIGITALOCEAN_API_URL
+          value: "https://api.devcloud.amd.com"
         - name: DIGITALOCEAN_ACCESS_TOKEN
           valueFrom:
             secretKeyRef:
