@@ -3,3 +3,48 @@
 
 # Namespace where the provider and its secret live (created by Fleet if missing)
 defaultNamespace: capdo-system
+
+diff:
+  comparePatches:
+    # --- cert-manager-owned fields: never let Fleet revert these ---
+    # The CA bundle that cert-manager injects into the conversion webhook.
+    # If Fleet "corrects" it back to the committed (empty) value you get
+    # InvalidCABundle and the CRD never Establishes.
+    - apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      name: doclusters.infrastructure.cluster.x-k8s.io
+      jsonPointers:
+        - /spec/conversion/webhook/clientConfig/caBundle
+        - /metadata/annotations/cert-manager.io~1inject-ca-from
+    - apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      name: domachinetemplates.infrastructure.cluster.x-k8s.io
+      jsonPointers:
+        - /spec/conversion/webhook/clientConfig/caBundle
+        - /metadata/annotations/cert-manager.io~1inject-ca-from
+    - apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      name: domachines.infrastructure.cluster.x-k8s.io
+      jsonPointers:
+        - /spec/conversion/webhook/clientConfig/caBundle
+        - /metadata/annotations/cert-manager.io~1inject-ca-from
+    # --- CAPI Operator-owned state ---
+    # Operator-managed CRD status and provider status churn on every sync;
+    # ignoring them keeps the bundle out of permanent Modified state.
+    - apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      name: doclusters.infrastructure.cluster.x-k8s.io
+      jsonPointers:
+        - /status
+    - apiVersion: operator.cluster.x-k8s.io/v1alpha2
+      kind: InfrastructureProvider
+      name: digitalocean
+      jsonPointers:
+        - /status
+    # Deployment/Service status fields owned by their controllers
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: capdo-controller-manager
+      jsonPointers:
+        - /status
+        - /metadata/annotations/deployment.kubernetes.io~1revision
