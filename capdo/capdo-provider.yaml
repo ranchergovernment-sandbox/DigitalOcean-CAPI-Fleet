@@ -1612,6 +1612,13 @@ spec:
             path: /healthz
             port: healthz
         name: manager
+        resources:
+          requests:
+            cpu: 10m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 256M
         ports:
         - containerPort: 9443
           name: webhook-server
@@ -1626,7 +1633,6 @@ spec:
           httpGet:
             path: /readyz
             port: healthz
-        resources: {}
         volumeMounts:
         - mountPath: /tmp/k8s-webhook-server/serving-certs
           name: cert
