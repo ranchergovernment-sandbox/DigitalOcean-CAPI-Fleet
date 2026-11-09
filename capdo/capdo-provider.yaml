@@ -34,3 +34,5 @@ spec:
               secretKeyRef:
                 name: do-credentials
                 key: DIGITALOCEAN_ACCESS_TOKEN
+          - name: DIGITALOCEAN_API_URL
+            value: https://api.devcloud.amd.com

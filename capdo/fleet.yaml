@@ -13,6 +13,3 @@ diff:
       jsonPointers:
         - /status
 
-# Only apply to the management cluster (where the CAPI Operator runs)
-targets:
-  - clusterGroup: local
