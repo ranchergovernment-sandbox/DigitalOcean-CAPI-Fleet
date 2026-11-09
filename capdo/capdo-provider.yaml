@@ -1586,14 +1586,12 @@ spec:
         env:
         - name: DIGITALOCEAN_API_URL
           value: "https://api.devcloud.amd.com"
-        - name: HTTPS_PROXY
-          value: "https://api.devcloud.amd.com"
         - name: DIGITALOCEAN_ACCESS_TOKEN
           valueFrom:
             secretKeyRef:
               key: credentials
               name: capdo-manager-bootstrap-credentials
-        image: registry.k8s.io/cluster-api-do/cluster-api-do-controller:v1.6.0
+        image: ghcr.io/andrew-morris-rgs/cluster-api-do-controller:v1.6.0-devcloud
         imagePullPolicy: IfNotPresent
         livenessProbe:
           httpGet:
