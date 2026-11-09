@@ -1582,7 +1582,7 @@ spec:
       - args:
         - --leader-elect
         - --metrics-bind-address=127.0.0.1:8080
-        - --metrics-secure=true
+        - --metrics-secure=false
         env:
         - name: DIGITALOCEAN_API_URL
           value: "https://api.devcloud.amd.com"
