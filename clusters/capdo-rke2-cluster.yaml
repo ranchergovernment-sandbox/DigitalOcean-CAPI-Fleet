@@ -39,35 +39,9 @@ spec:
       etcd-expose-metrics: false
       ingress-controller: traefik
       protect-kernel-defaults: false
-      cloud-provider-name: external
     etcd:
       snapshotScheduleCron: "0 */12 * * *"
       snapshotRetention: 6
-    # DigitalOcean CCM, installed at bootstrap (replaces kubeadm's external cloud-provider args)
-    additionalManifest: |-
-      apiVersion: helm.cattle.io/v1
-      kind: HelmChart
-      metadata:
-        name: digitalocean-ccm
-        namespace: kube-system
-      spec:
-        chart: digitalocean-cloud-controller-manager
-        repo: https://charts.digitalocean.com
-        targetNamespace: kube-system
-        bootstrap: true
-        valuesContent: |-
-          hostNetworking: true
-          nodeSelector:
-            node-role.kubernetes.io/control-plane: "true"
-          tolerations:
-            - key: node.cloudprovider.kubernetes.io/uninitialized
-              value: "true"
-              effect: NoSchedule
-            - key: node-role.kubernetes.io/control-plane
-              effect: NoSchedule
-            - key: node-role.kubernetes.io/etcd
-              effect: NoExecute
----
 # Infrastructure cluster (unchanged apart from namespace)
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: DOCluster
