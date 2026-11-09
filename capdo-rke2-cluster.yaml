@@ -1,0 +1,116 @@
+# Rancher v2prov (provisioning.cattle.io) + native CAPI infrastructure provider (CAPDO)
+# Applies on the Rancher management cluster. Namespace MUST be fleet-default.
+# Requires: CAPDO installed on the management cluster, DigitalOcean token configured for it,
+# and a Rancher RKE2 k8s version (1.34–1.36 for Rancher 2.15.x; v1.32 is NOT supported).
+# Prereqs: ports 6443, 9345, 2379-2380, 10250 open between droplets.
+
+---
+# Rancher cluster object — replaces the CAPI Cluster + KubeadmControlPlane +
+# MachineDeployment + KubeadmConfigTemplate. Rancher's RKE2 bootstrap/control-plane
+# providers generate the underlying CAPI objects.
+apiVersion: provisioning.cattle.io/v1
+kind: Cluster
+metadata:
+  name: capdo-quickstart
+  namespace: fleet-default
+spec:
+  kubernetesVersion: v1.34.11+rke2r1   # 1.34–1.36 supported by Rancher 2.15.x; 1.32 is not
+  rkeConfig:
+    # Ref to the CAPDO infra cluster defined below
+    infrastructureRef:
+      apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+      kind: DOCluster
+      name: capdo-quickstart
+      namespace: fleet-default
+    machinePools:
+      - name: control-plane
+        controlPlaneRole: true
+        etcdRole: true
+        workerRole: true
+        quantity: 1
+        machineConfigRef:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+          kind: DOMachineTemplate
+          name: capdo-quickstart-control-plane
+          namespace: fleet-default
+      - name: md-0
+        controlPlaneRole: false
+        etcdRole: false
+        workerRole: true
+        quantity: 3
+        machineConfigRef:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+          kind: DOMachineTemplate
+          name: capdo-quickstart-md-0
+          namespace: fleet-default
+    machineGlobalConfig:
+      cni: calico
+      disable-kube-proxy: false
+      etcd-expose-metrics: false
+      ingress-controller: traefik
+      protect-kernel-defaults: false
+      cloud-provider-name: external
+    etcd:
+      snapshotScheduleCron: "0 */12 * * *"
+      snapshotRetention: 6
+    # DigitalOcean CCM, installed at bootstrap (replaces kubeadm's external cloud-provider args)
+    additionalManifest: |-
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChart
+      metadata:
+        name: digitalocean-ccm
+        namespace: kube-system
+      spec:
+        chart: digitalocean-cloud-controller-manager
+        repo: https://charts.digitalocean.com
+        targetNamespace: kube-system
+        bootstrap: true
+        valuesContent: |-
+          hostNetworking: true
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: "true"
+          tolerations:
+            - key: node.cloudprovider.kubernetes.io/uninitialized
+              value: "true"
+              effect: NoSchedule
+            - key: node-role.kubernetes.io/control-plane
+              effect: NoSchedule
+            - key: node-role.kubernetes.io/etcd
+              effect: NoExecute
+---
+# Infrastructure cluster (unchanged apart from namespace)
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: DOCluster
+metadata:
+  name: capdo-quickstart
+  namespace: fleet-default
+spec:
+  region: atl1
+---
+# Control-plane machine template
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: DOMachineTemplate
+metadata:
+  name: capdo-quickstart-control-plane
+  namespace: fleet-default
+spec:
+  template:
+    spec:
+      image: 252012821
+      size: gpu-mi300x1-192gb-devcloud
+      sshKeys:
+        - 60454848
+---
+# Worker machine template
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: DOMachineTemplate
+metadata:
+  name: capdo-quickstart-md-0
+  namespace: fleet-default
+spec:
+  template:
+    spec:
+      image: 252012821
+      size: gpu-mi300x1-192gb-devcloud
+      sshKeys:
+        - 60454848

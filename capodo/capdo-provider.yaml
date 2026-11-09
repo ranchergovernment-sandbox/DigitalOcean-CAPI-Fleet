@@ -1,0 +1,36 @@
+# CAPI Operator CR: installs the DOCluster/DOMachineTemplate CRDs, the
+# capdo-controller-manager deployment AND its webhook — with resources
+# constrained at the source so it can't starve a small management cluster.
+apiVersion: operator.cluster.x-k8s.io/v1alpha2
+kind: InfrastructureProvider
+metadata:
+  name: digitalocean
+  namespace: capdo-system
+spec:
+  # Pin the version — verify against https://github.com/digitalocean/cluster-api-provider-digitalocean/releases
+  version: v0.2.4
+  fetchConfig:
+    url: https://github.com/digitalocean/cluster-api-provider-digitalocean/releases
+  configSecret:
+    name: do-credentials
+  manager:
+    # Cap reconcile parallelism — protects a 1-node management cluster
+    maxConcurrentReconciles: 2
+    verbosity: 1
+  deployment:
+    replicas: 1
+    containers:
+      - name: manager
+        resources:
+          requests:
+            cpu: 10m
+            memory: 64Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
+        env:
+          - name: DIGITALOCEAN_ACCESS_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: do-credentials
+                key: DIGITALOCEAN_ACCESS_TOKEN

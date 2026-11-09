@@ -1,0 +1,22 @@
+# Fleet bundle config for the capdo/ directory
+# Keep the bundle scoped and prevent drift fights with the CAPI Operator.
+
+# Namespace where the provider and its secret live (created by Fleet if missing)
+defaultNamespace: capdo-system
+namespace:
+  annotations:
+    # Optional: auto-import CAPI clusters created in this namespace into Rancher
+    cluster-api.cattle.io/rancher-auto-import: "true"
+
+# The operator owns provider status fields — don't let drift remediation revert them
+diff:
+  comparePatches:
+    - apiVersion: operator.cluster.x-k8s.io/v1alpha2
+      kind: InfrastructureProvider
+      name: digitalocean
+      jsonPointers:
+        - /status
+
+# Only apply to the management cluster (where the CAPI Operator runs)
+targets:
+  - clusterGroup: local

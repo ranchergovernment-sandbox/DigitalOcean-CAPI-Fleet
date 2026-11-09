@@ -1,0 +1,13 @@
+apiVersion: fleet.cattle.io/v1alpha1
+kind: GitRepo
+metadata:
+  name: capdo-provider
+  namespace: fleet-local
+spec:
+  repo: https://github.com/yourorg/your-repo.git
+  branch: main
+  paths:
+    - capdo
+  targets:
+    - clusterGroup: local   # only deploy to the management cluster
+  syncGenerationLimit: 3
