@@ -55,6 +55,3 @@ diff:
       jsonPointers:
         - /status
         - /metadata/annotations/deployment.kubernetes.io~1revision
-    
-    data:
-  credentials: null
