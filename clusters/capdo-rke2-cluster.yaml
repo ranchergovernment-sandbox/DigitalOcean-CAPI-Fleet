@@ -42,6 +42,7 @@ spec:
     etcd:
       snapshotScheduleCron: "0 */12 * * *"
       snapshotRetention: 6
+---
 # Infrastructure cluster (unchanged apart from namespace)
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: DOCluster
