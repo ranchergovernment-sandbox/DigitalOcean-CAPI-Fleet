@@ -3,6 +3,3 @@
 
 # Namespace where the provider and its secret live (created by Fleet if missing)
 defaultNamespace: capdo-system
-
-s
-
