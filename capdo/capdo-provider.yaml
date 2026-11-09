@@ -1581,7 +1581,7 @@ spec:
       containers:
       - args:
         - --leader-elect
-        - --metrics-bind-address=127.0.0.1:8080 --metrics-secure=false
+        - --metrics-bind-address=127.0.0.1:8080
         - --metrics-secure=true
         env:
         - name: DIGITALOCEAN_API_URL
