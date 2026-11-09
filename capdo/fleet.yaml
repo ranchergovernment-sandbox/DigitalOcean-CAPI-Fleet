@@ -4,12 +4,5 @@
 # Namespace where the provider and its secret live (created by Fleet if missing)
 defaultNamespace: capdo-system
 
-# The operator owns provider status fields — don't let drift remediation revert them
-diff:
-  comparePatches:
-    - apiVersion: operator.cluster.x-k8s.io/v1alpha2
-      kind: InfrastructureProvider
-      name: digitalocean
-      jsonPointers:
-        - /status
+s
 
