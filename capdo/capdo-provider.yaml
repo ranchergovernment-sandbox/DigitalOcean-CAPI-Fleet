@@ -1,38 +1,1845 @@
-# CAPI Operator CR: installs the DOCluster/DOMachineTemplate CRDs, the
-# capdo-controller-manager deployment AND its webhook — with resources
-# constrained at the source so it can't starve a small management cluster.
-apiVersion: operator.cluster.x-k8s.io/v1alpha2
-kind: InfrastructureProvider
+apiVersion: v1
+kind: Namespace
 metadata:
-  name: digitalocean
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+  name: capdo-system
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+  name: capdo-selfsigned-issuer
   namespace: capdo-system
 spec:
-  # Pin the version — verify against https://github.com/digitalocean/cluster-api-provider-digitalocean/releases
-  version: v0.2.4
-  fetchConfig:
-    url: https://github.com/digitalocean/cluster-api-provider-digitalocean/releases
-  configSecret:
-    name: do-credentials
-  manager:
-    # Cap reconcile parallelism — protects a 1-node management cluster
-    maxConcurrentReconciles: 2
-    verbosity: 1
-  deployment:
-    replicas: 1
-    containers:
-      - name: manager
-        resources:
-          requests:
-            cpu: 10m
-            memory: 64Mi
-          limits:
-            cpu: 250m
-            memory: 256Mi
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+  name: capdo-serving-cert
+  namespace: capdo-system
+spec:
+  dnsNames:
+  - capdo-webhook-service.capdo-system.svc
+  - capdo-webhook-service.capdo-system.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: capdo-selfsigned-issuer
+  secretName: capdo-webhook-service-cert
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: capdo-system/capdo-serving-cert
+    controller-gen.kubebuilder.io/version: v0.13.0
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    cluster.x-k8s.io/v1beta1: v1beta1
+    clusterctl.cluster.x-k8s.io: ""
+  name: doclusters.infrastructure.cluster.x-k8s.io
+spec:
+  conversion:
+    strategy: Webhook
+    webhook:
+      clientConfig:
+        caBundle: Cg==
+        service:
+          name: capdo-webhook-service
+          namespace: capdo-system
+          path: /convert
+      conversionReviewVersions:
+      - v1
+      - v1beta1
+  group: infrastructure.cluster.x-k8s.io
+  names:
+    categories:
+    - cluster-api
+    kind: DOCluster
+    listKind: DOClusterList
+    plural: doclusters
+    singular: docluster
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: Cluster to which this DOCluster belongs
+      jsonPath: .metadata.labels.cluster\.x-k8s\.io/cluster-name
+      name: Cluster
+      type: string
+    - description: Cluster infrastructure is ready for DigitalOcean droplet instances
+      jsonPath: .status.ready
+      name: Ready
+      type: string
+    - description: API Endpoint
+      jsonPath: .spec.ControlPlaneEndpoint
+      name: Endpoint
+      priority: 1
+      type: string
+    name: v1alpha4
+    schema:
+      openAPIV3Schema:
+        description: DOCluster is the Schema for the DOClusters API.
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DOClusterSpec defines the desired state of DOCluster.
+            properties:
+              controlPlaneDNS:
+                description: ControlPlaneDNS is a managed DNS name that points to
+                  the load-balancer IP used for the ControlPlaneEndpoint.
+                properties:
+                  domain:
+                    description: Domain is the DO domain that this record should live
+                      in. It must be pre-existing in your DO account. The format must
+                      be a string that conforms to the definition of a subdomain in
+                      DNS (RFC 1123)
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                  name:
+                    description: Name is the DNS short name of the record (non-FQDN)
+                      The format must consist of alphanumeric characters, '-' or '.',
+                      and must start and end with an alphanumeric character
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                    type: string
+                required:
+                - domain
+                - name
+                type: object
+              controlPlaneEndpoint:
+                description: ControlPlaneEndpoint represents the endpoint used to
+                  communicate with the control plane. If ControlPlaneDNS is unset,
+                  the DO load-balancer IP of the Kubernetes API Server is used.
+                properties:
+                  host:
+                    description: The hostname on which the API server is serving.
+                    type: string
+                  port:
+                    description: The port on which the API server is serving.
+                    format: int32
+                    type: integer
+                required:
+                - host
+                - port
+                type: object
+              network:
+                description: Network configurations
+                properties:
+                  apiServerLoadbalancers:
+                    description: Configures an API Server loadbalancers
+                    properties:
+                      algorithm:
+                        description: The API Server load balancing algorithm used
+                          to determine which backend Droplet will be selected by a
+                          client. It must be either "round_robin" or "least_connections".
+                          The default value is "round_robin".
+                        enum:
+                        - round_robin
+                        - least_connections
+                        type: string
+                      healthCheck:
+                        description: An object specifying health check settings for
+                          the Load Balancer. If omitted, default values will be provided.
+                        properties:
+                          healthyThreshold:
+                            description: The number of times a health check must pass
+                              for a backend Droplet to be marked "healthy" and be
+                              re-added to the pool. The vaule must be between 2 and
+                              10. If not specified, the default value is 5.
+                            maximum: 10
+                            minimum: 2
+                            type: integer
+                          interval:
+                            description: The number of seconds between between two
+                              consecutive health checks. The value must be between
+                              3 and 300. If not specified, the default value is 10.
+                            maximum: 300
+                            minimum: 3
+                            type: integer
+                          timeout:
+                            description: The number of seconds the Load Balancer instance
+                              will wait for a response until marking a health check
+                              as failed. The value must be between 3 and 300. If not
+                              specified, the default value is 5.
+                            maximum: 300
+                            minimum: 3
+                            type: integer
+                          unhealthyThreshold:
+                            description: The number of times a health check must fail
+                              for a backend Droplet to be marked "unhealthy" and be
+                              removed from the pool. The vaule must be between 2 and
+                              10. If not specified, the default value is 3.
+                            maximum: 10
+                            minimum: 2
+                            type: integer
+                        type: object
+                      port:
+                        description: API Server port. It must be valid ports range
+                          (1-65535). If omitted, default value is 6443.
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                      resourceId:
+                        description: The DO load balancer UUID. If omitted, a new
+                          load balancer will be created.
+                        type: string
+                    type: object
+                  vpc:
+                    description: VPC defines the VPC configuration.
+                    properties:
+                      vpc_uuid:
+                        description: VPCUUID defines the VPC UUID to use. An empty
+                          value implies using the default VPC.
+                        type: string
+                    type: object
+                type: object
+              region:
+                description: The DigitalOcean Region the cluster lives in. It must
+                  be one of available region on DigitalOcean. See https://developers.digitalocean.com/documentation/v2/#list-all-regions
+                type: string
+            required:
+            - region
+            type: object
+          status:
+            description: DOClusterStatus defines the observed state of DOCluster.
+            properties:
+              controlPlaneDNSRecordReady:
+                description: ControlPlaneDNSRecordReady denotes that the DNS record
+                  is ready and propagated to the DO DNS servers.
+                type: boolean
+              network:
+                description: Network encapsulates all things related to DigitalOcean
+                  network.
+                properties:
+                  apiServerLoadbalancersRef:
+                    description: APIServerLoadbalancersRef is the id of apiserver
+                      loadbalancers.
+                    properties:
+                      resourceId:
+                        description: ID of DigitalOcean resource
+                        type: string
+                      resourceStatus:
+                        description: Status of DigitalOcean resource
+                        type: string
+                    type: object
+                type: object
+              ready:
+                description: Ready denotes that the cluster (infrastructure) is ready.
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: false
+    subresources:
+      status: {}
+  - additionalPrinterColumns:
+    - description: Cluster to which this DOCluster belongs
+      jsonPath: .metadata.labels.cluster\.x-k8s\.io/cluster-name
+      name: Cluster
+      type: string
+    - description: Cluster infrastructure is ready for DigitalOcean droplet instances
+      jsonPath: .status.ready
+      name: Ready
+      type: string
+    - description: API Endpoint
+      jsonPath: .spec.ControlPlaneEndpoint
+      name: Endpoint
+      priority: 1
+      type: string
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: DOCluster is the Schema for the DOClusters API.
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DOClusterSpec defines the desired state of DOCluster.
+            properties:
+              controlPlaneDNS:
+                description: ControlPlaneDNS is a managed DNS name that points to
+                  the load-balancer IP used for the ControlPlaneEndpoint.
+                properties:
+                  domain:
+                    description: Domain is the DO domain that this record should live
+                      in. It must be pre-existing in your DO account. The format must
+                      be a string that conforms to the definition of a subdomain in
+                      DNS (RFC 1123)
+                    pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                    type: string
+                  name:
+                    description: Name is the DNS short name of the record (non-FQDN)
+                      The format must consist of alphanumeric characters, '-' or '.',
+                      and must start and end with an alphanumeric character
+                    pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                    type: string
+                required:
+                - domain
+                - name
+                type: object
+              controlPlaneEndpoint:
+                description: ControlPlaneEndpoint represents the endpoint used to
+                  communicate with the control plane. If ControlPlaneDNS is unset,
+                  the DO load-balancer IP of the Kubernetes API Server is used.
+                properties:
+                  host:
+                    description: The hostname on which the API server is serving.
+                    type: string
+                  port:
+                    description: The port on which the API server is serving.
+                    format: int32
+                    type: integer
+                required:
+                - host
+                - port
+                type: object
+              network:
+                description: Network configurations
+                properties:
+                  apiServerLoadbalancers:
+                    description: Configures an API Server loadbalancers
+                    properties:
+                      algorithm:
+                        description: The API Server load balancing algorithm used
+                          to determine which backend Droplet will be selected by a
+                          client. It must be either "round_robin" or "least_connections".
+                          The default value is "round_robin".
+                        enum:
+                        - round_robin
+                        - least_connections
+                        type: string
+                      healthCheck:
+                        description: An object specifying health check settings for
+                          the Load Balancer. If omitted, default values will be provided.
+                        properties:
+                          healthyThreshold:
+                            description: The number of times a health check must pass
+                              for a backend Droplet to be marked "healthy" and be
+                              re-added to the pool. The vaule must be between 2 and
+                              10. If not specified, the default value is 5.
+                            maximum: 10
+                            minimum: 2
+                            type: integer
+                          interval:
+                            description: The number of seconds between between two
+                              consecutive health checks. The value must be between
+                              3 and 300. If not specified, the default value is 10.
+                            maximum: 300
+                            minimum: 3
+                            type: integer
+                          timeout:
+                            description: The number of seconds the Load Balancer instance
+                              will wait for a response until marking a health check
+                              as failed. The value must be between 3 and 300. If not
+                              specified, the default value is 5.
+                            maximum: 300
+                            minimum: 3
+                            type: integer
+                          unhealthyThreshold:
+                            description: The number of times a health check must fail
+                              for a backend Droplet to be marked "unhealthy" and be
+                              removed from the pool. The vaule must be between 2 and
+                              10. If not specified, the default value is 3.
+                            maximum: 10
+                            minimum: 2
+                            type: integer
+                        type: object
+                      port:
+                        description: API Server port. It must be valid ports range
+                          (1-65535). If omitted, default value is 6443.
+                        maximum: 65535
+                        minimum: 1
+                        type: integer
+                      resourceId:
+                        description: The DO load balancer UUID. If omitted, a new
+                          load balancer will be created.
+                        type: string
+                    type: object
+                  vpc:
+                    description: VPC defines the VPC configuration.
+                    properties:
+                      vpc_uuid:
+                        description: VPCUUID defines the VPC UUID to use. An empty
+                          value implies using the default VPC.
+                        type: string
+                    type: object
+                type: object
+              region:
+                description: The DigitalOcean Region the cluster lives in. It must
+                  be one of available region on DigitalOcean. See https://developers.digitalocean.com/documentation/v2/#list-all-regions
+                type: string
+            required:
+            - region
+            type: object
+          status:
+            description: DOClusterStatus defines the observed state of DOCluster.
+            properties:
+              controlPlaneDNSRecordReady:
+                description: ControlPlaneDNSRecordReady denotes that the DNS record
+                  is ready and propagated to the DO DNS servers.
+                type: boolean
+              network:
+                description: Network encapsulates all things related to DigitalOcean
+                  network.
+                properties:
+                  apiServerLoadbalancersRef:
+                    description: APIServerLoadbalancersRef is the id of apiserver
+                      loadbalancers.
+                    properties:
+                      resourceId:
+                        description: ID of DigitalOcean resource
+                        type: string
+                      resourceStatus:
+                        description: Status of DigitalOcean resource
+                        type: string
+                    type: object
+                type: object
+              ready:
+                description: Ready denotes that the cluster (infrastructure) is ready.
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: null
+  storedVersions: null
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: capdo-system/capdo-serving-cert
+    controller-gen.kubebuilder.io/version: v0.13.0
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    cluster.x-k8s.io/v1beta1: v1beta1
+    clusterctl.cluster.x-k8s.io: ""
+  name: doclustertemplates.infrastructure.cluster.x-k8s.io
+spec:
+  conversion:
+    strategy: Webhook
+    webhook:
+      clientConfig:
+        caBundle: Cg==
+        service:
+          name: capdo-webhook-service
+          namespace: capdo-system
+          path: /convert
+      conversionReviewVersions:
+      - v1
+      - v1beta1
+  group: infrastructure.cluster.x-k8s.io
+  names:
+    categories:
+    - cluster-api
+    kind: DOClusterTemplate
+    listKind: DOClusterTemplateList
+    plural: doclustertemplates
+    shortNames:
+    - doct
+    singular: doclustertemplate
+  scope: Namespaced
+  versions:
+  - name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: DOClusterTemplate is the Schema for the DOclustertemplates API.
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DOClusterTemplateSpec defines the desired state of DOClusterTemplate.
+            properties:
+              template:
+                description: DOClusterTemplateResource contains spec for DOClusterSpec.
+                properties:
+                  spec:
+                    description: DOClusterSpec defines the desired state of DOCluster.
+                    properties:
+                      controlPlaneDNS:
+                        description: ControlPlaneDNS is a managed DNS name that points
+                          to the load-balancer IP used for the ControlPlaneEndpoint.
+                        properties:
+                          domain:
+                            description: Domain is the DO domain that this record
+                              should live in. It must be pre-existing in your DO account.
+                              The format must be a string that conforms to the definition
+                              of a subdomain in DNS (RFC 1123)
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                          name:
+                            description: Name is the DNS short name of the record
+                              (non-FQDN) The format must consist of alphanumeric characters,
+                              '-' or '.', and must start and end with an alphanumeric
+                              character
+                            pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
+                            type: string
+                        required:
+                        - domain
+                        - name
+                        type: object
+                      controlPlaneEndpoint:
+                        description: ControlPlaneEndpoint represents the endpoint
+                          used to communicate with the control plane. If ControlPlaneDNS
+                          is unset, the DO load-balancer IP of the Kubernetes API
+                          Server is used.
+                        properties:
+                          host:
+                            description: The hostname on which the API server is serving.
+                            type: string
+                          port:
+                            description: The port on which the API server is serving.
+                            format: int32
+                            type: integer
+                        required:
+                        - host
+                        - port
+                        type: object
+                      network:
+                        description: Network configurations
+                        properties:
+                          apiServerLoadbalancers:
+                            description: Configures an API Server loadbalancers
+                            properties:
+                              algorithm:
+                                description: The API Server load balancing algorithm
+                                  used to determine which backend Droplet will be
+                                  selected by a client. It must be either "round_robin"
+                                  or "least_connections". The default value is "round_robin".
+                                enum:
+                                - round_robin
+                                - least_connections
+                                type: string
+                              healthCheck:
+                                description: An object specifying health check settings
+                                  for the Load Balancer. If omitted, default values
+                                  will be provided.
+                                properties:
+                                  healthyThreshold:
+                                    description: The number of times a health check
+                                      must pass for a backend Droplet to be marked
+                                      "healthy" and be re-added to the pool. The vaule
+                                      must be between 2 and 10. If not specified,
+                                      the default value is 5.
+                                    maximum: 10
+                                    minimum: 2
+                                    type: integer
+                                  interval:
+                                    description: The number of seconds between between
+                                      two consecutive health checks. The value must
+                                      be between 3 and 300. If not specified, the
+                                      default value is 10.
+                                    maximum: 300
+                                    minimum: 3
+                                    type: integer
+                                  timeout:
+                                    description: The number of seconds the Load Balancer
+                                      instance will wait for a response until marking
+                                      a health check as failed. The value must be
+                                      between 3 and 300. If not specified, the default
+                                      value is 5.
+                                    maximum: 300
+                                    minimum: 3
+                                    type: integer
+                                  unhealthyThreshold:
+                                    description: The number of times a health check
+                                      must fail for a backend Droplet to be marked
+                                      "unhealthy" and be removed from the pool. The
+                                      vaule must be between 2 and 10. If not specified,
+                                      the default value is 3.
+                                    maximum: 10
+                                    minimum: 2
+                                    type: integer
+                                type: object
+                              port:
+                                description: API Server port. It must be valid ports
+                                  range (1-65535). If omitted, default value is 6443.
+                                maximum: 65535
+                                minimum: 1
+                                type: integer
+                              resourceId:
+                                description: The DO load balancer UUID. If omitted,
+                                  a new load balancer will be created.
+                                type: string
+                            type: object
+                          vpc:
+                            description: VPC defines the VPC configuration.
+                            properties:
+                              vpc_uuid:
+                                description: VPCUUID defines the VPC UUID to use.
+                                  An empty value implies using the default VPC.
+                                type: string
+                            type: object
+                        type: object
+                      region:
+                        description: The DigitalOcean Region the cluster lives in.
+                          It must be one of available region on DigitalOcean. See
+                          https://developers.digitalocean.com/documentation/v2/#list-all-regions
+                        type: string
+                    required:
+                    - region
+                    type: object
+                required:
+                - spec
+                type: object
+            required:
+            - template
+            type: object
+        type: object
+    served: true
+    storage: true
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: null
+  storedVersions: null
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: capdo-system/capdo-serving-cert
+    controller-gen.kubebuilder.io/version: v0.13.0
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    cluster.x-k8s.io/v1beta1: v1beta1
+    clusterctl.cluster.x-k8s.io: ""
+  name: domachines.infrastructure.cluster.x-k8s.io
+spec:
+  conversion:
+    strategy: Webhook
+    webhook:
+      clientConfig:
+        caBundle: Cg==
+        service:
+          name: capdo-webhook-service
+          namespace: capdo-system
+          path: /convert
+      conversionReviewVersions:
+      - v1
+      - v1beta1
+  group: infrastructure.cluster.x-k8s.io
+  names:
+    categories:
+    - cluster-api
+    kind: DOMachine
+    listKind: DOMachineList
+    plural: domachines
+    singular: domachine
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: Cluster to which this DOMachine belongs
+      jsonPath: .metadata.labels.cluster\.x-k8s\.io/cluster-name
+      name: Cluster
+      type: string
+    - description: DigitalOcean droplet instance state
+      jsonPath: .status.instanceStatus
+      name: State
+      type: string
+    - description: Machine ready status
+      jsonPath: .status.ready
+      name: Ready
+      type: string
+    - description: DigitalOcean droplet instance ID
+      jsonPath: .spec.providerID
+      name: InstanceID
+      type: string
+    - description: Machine object which owns with this DOMachine
+      jsonPath: .metadata.ownerReferences[?(@.kind=="Machine")].name
+      name: Machine
+      type: string
+    name: v1alpha4
+    schema:
+      openAPIV3Schema:
+        description: DOMachine is the Schema for the domachines API.
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DOMachineSpec defines the desired state of DOMachine.
+            properties:
+              additionalTags:
+                description: AdditionalTags is an optional set of tags to add to DigitalOcean
+                  resources managed by the DigitalOcean provider.
+                items:
+                  type: string
+                type: array
+              dataDisks:
+                description: DataDisks specifies the parameters that are used to add
+                  one or more data disks to the machine
+                items:
+                  description: DataDisk specifies the parameters that are used to
+                    add a data disk to the machine.
+                  properties:
+                    diskSizeGB:
+                      description: DiskSizeGB is the size in GB to assign to the data
+                        disk.
+                      format: int64
+                      type: integer
+                    filesystemLabel:
+                      description: 'FilesystemLabel is the label that is applied to
+                        the created filesystem. Character limits apply: 16 for ext4;
+                        12 for xfs. May only be used in conjunction with filesystemType.'
+                      type: string
+                    filesystemType:
+                      description: FilesystemType to be used on the volume. When provided
+                        the volume will be automatically formatted.
+                      type: string
+                    nameSuffix:
+                      description: NameSuffix is the suffix to be appended to the
+                        machine name to generate the disk name. Each disk name will
+                        be in format <dropletName>-<nameSuffix>.
+                      type: string
+                  required:
+                  - diskSizeGB
+                  - nameSuffix
+                  type: object
+                type: array
+              image:
+                anyOf:
+                - type: integer
+                - type: string
+                description: Droplet image can be image id or slug. See https://developers.digitalocean.com/documentation/v2/#list-all-images
+                x-kubernetes-int-or-string: true
+              providerID:
+                description: ProviderID is the unique identifier as specified by the
+                  cloud provider.
+                type: string
+              size:
+                description: Droplet size. It must be known DigitalOcean droplet size.
+                  See https://developers.digitalocean.com/documentation/v2/#list-all-sizes
+                type: string
+              sshKeys:
+                description: SSHKeys is the ssh key id or fingerprint to attach in
+                  DigitalOcean droplet. It must be available on DigitalOcean account.
+                  See https://developers.digitalocean.com/documentation/v2/#list-all-keys
+                items:
+                  anyOf:
+                  - type: integer
+                  - type: string
+                  x-kubernetes-int-or-string: true
+                type: array
+            required:
+            - image
+            - size
+            - sshKeys
+            type: object
+          status:
+            description: DOMachineStatus defines the observed state of DOMachine.
+            properties:
+              addresses:
+                description: Addresses contains the DigitalOcean droplet associated
+                  addresses.
+                items:
+                  description: NodeAddress contains information for the node's address.
+                  properties:
+                    address:
+                      description: The node address.
+                      type: string
+                    type:
+                      description: Node address type, one of Hostname, ExternalIP
+                        or InternalIP.
+                      type: string
+                  required:
+                  - address
+                  - type
+                  type: object
+                type: array
+              failureMessage:
+                description: "FailureMessage will be set in the event that there is
+                  a terminal problem reconciling the Machine and will contain a more
+                  verbose string suitable for logging and human consumption. \n This
+                  field should not be set for transitive errors that a controller
+                  faces that are expected to be fixed automatically over time (like
+                  service outages), but instead indicate that something is fundamentally
+                  wrong with the Machine's spec or the configuration of the controller,
+                  and that manual intervention is required. Examples of terminal errors
+                  would be invalid combinations of settings in the spec, values that
+                  are unsupported by the controller, or the responsible controller
+                  itself being critically misconfigured. \n Any transient errors that
+                  occur during the reconciliation of Machines can be added as events
+                  to the Machine object and/or logged in the controller's output."
+                type: string
+              failureReason:
+                description: "FailureReason will be set in the event that there is
+                  a terminal problem reconciling the Machine and will contain a succinct
+                  value suitable for machine interpretation. \n This field should
+                  not be set for transitive errors that a controller faces that are
+                  expected to be fixed automatically over time (like service outages),
+                  but instead indicate that something is fundamentally wrong with
+                  the Machine's spec or the configuration of the controller, and that
+                  manual intervention is required. Examples of terminal errors would
+                  be invalid combinations of settings in the spec, values that are
+                  unsupported by the controller, or the responsible controller itself
+                  being critically misconfigured. \n Any transient errors that occur
+                  during the reconciliation of Machines can be added as events to
+                  the Machine object and/or logged in the controller's output."
+                type: string
+              instanceStatus:
+                description: InstanceStatus is the status of the DigitalOcean droplet
+                  instance for this machine.
+                type: string
+              ready:
+                description: Ready is true when the provider resource is ready.
+                type: boolean
+              volumes:
+                description: Volumes contains the DigitalOcean droplet associated
+                  block storage volumes.
+                items:
+                  description: DOVolume defines a DO Block Storage Volume.
+                  properties:
+                    id:
+                      type: string
+                  required:
+                  - id
+                  type: object
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: false
+    subresources:
+      status: {}
+  - additionalPrinterColumns:
+    - description: Cluster to which this DOMachine belongs
+      jsonPath: .metadata.labels.cluster\.x-k8s\.io/cluster-name
+      name: Cluster
+      type: string
+    - description: DigitalOcean droplet instance state
+      jsonPath: .status.instanceStatus
+      name: State
+      type: string
+    - description: Machine ready status
+      jsonPath: .status.ready
+      name: Ready
+      type: string
+    - description: DigitalOcean droplet instance ID
+      jsonPath: .spec.providerID
+      name: InstanceID
+      type: string
+    - description: Machine object which owns with this DOMachine
+      jsonPath: .metadata.ownerReferences[?(@.kind=="Machine")].name
+      name: Machine
+      type: string
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: DOMachine is the Schema for the domachines API.
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DOMachineSpec defines the desired state of DOMachine.
+            properties:
+              additionalTags:
+                description: AdditionalTags is an optional set of tags to add to DigitalOcean
+                  resources managed by the DigitalOcean provider.
+                items:
+                  type: string
+                type: array
+              dataDisks:
+                description: DataDisks specifies the parameters that are used to add
+                  one or more data disks to the machine
+                items:
+                  description: DataDisk specifies the parameters that are used to
+                    add a data disk to the machine.
+                  properties:
+                    diskSizeGB:
+                      description: DiskSizeGB is the size in GB to assign to the data
+                        disk.
+                      format: int64
+                      type: integer
+                    filesystemLabel:
+                      description: 'FilesystemLabel is the label that is applied to
+                        the created filesystem. Character limits apply: 16 for ext4;
+                        12 for xfs. May only be used in conjunction with filesystemType.'
+                      type: string
+                    filesystemType:
+                      description: FilesystemType to be used on the volume. When provided
+                        the volume will be automatically formatted.
+                      type: string
+                    nameSuffix:
+                      description: NameSuffix is the suffix to be appended to the
+                        machine name to generate the disk name. Each disk name will
+                        be in format <dropletName>-<nameSuffix>.
+                      type: string
+                  required:
+                  - diskSizeGB
+                  - nameSuffix
+                  type: object
+                type: array
+              image:
+                anyOf:
+                - type: integer
+                - type: string
+                description: Droplet image can be image id or slug. See https://developers.digitalocean.com/documentation/v2/#list-all-images
+                x-kubernetes-int-or-string: true
+              providerID:
+                description: ProviderID is the unique identifier as specified by the
+                  cloud provider.
+                type: string
+              size:
+                description: Droplet size. It must be known DigitalOcean droplet size.
+                  See https://developers.digitalocean.com/documentation/v2/#list-all-sizes
+                type: string
+              sshKeys:
+                description: SSHKeys is the ssh key id or fingerprint to attach in
+                  DigitalOcean droplet. It must be available on DigitalOcean account.
+                  See https://developers.digitalocean.com/documentation/v2/#list-all-keys
+                items:
+                  anyOf:
+                  - type: integer
+                  - type: string
+                  x-kubernetes-int-or-string: true
+                type: array
+            required:
+            - image
+            - size
+            - sshKeys
+            type: object
+          status:
+            description: DOMachineStatus defines the observed state of DOMachine.
+            properties:
+              addresses:
+                description: Addresses contains the DigitalOcean droplet associated
+                  addresses.
+                items:
+                  description: NodeAddress contains information for the node's address.
+                  properties:
+                    address:
+                      description: The node address.
+                      type: string
+                    type:
+                      description: Node address type, one of Hostname, ExternalIP
+                        or InternalIP.
+                      type: string
+                  required:
+                  - address
+                  - type
+                  type: object
+                type: array
+              failureMessage:
+                description: "FailureMessage will be set in the event that there is
+                  a terminal problem reconciling the Machine and will contain a more
+                  verbose string suitable for logging and human consumption. \n This
+                  field should not be set for transitive errors that a controller
+                  faces that are expected to be fixed automatically over time (like
+                  service outages), but instead indicate that something is fundamentally
+                  wrong with the Machine's spec or the configuration of the controller,
+                  and that manual intervention is required. Examples of terminal errors
+                  would be invalid combinations of settings in the spec, values that
+                  are unsupported by the controller, or the responsible controller
+                  itself being critically misconfigured. \n Any transient errors that
+                  occur during the reconciliation of Machines can be added as events
+                  to the Machine object and/or logged in the controller's output."
+                type: string
+              failureReason:
+                description: "FailureReason will be set in the event that there is
+                  a terminal problem reconciling the Machine and will contain a succinct
+                  value suitable for machine interpretation. \n This field should
+                  not be set for transitive errors that a controller faces that are
+                  expected to be fixed automatically over time (like service outages),
+                  but instead indicate that something is fundamentally wrong with
+                  the Machine's spec or the configuration of the controller, and that
+                  manual intervention is required. Examples of terminal errors would
+                  be invalid combinations of settings in the spec, values that are
+                  unsupported by the controller, or the responsible controller itself
+                  being critically misconfigured. \n Any transient errors that occur
+                  during the reconciliation of Machines can be added as events to
+                  the Machine object and/or logged in the controller's output."
+                type: string
+              instanceStatus:
+                description: InstanceStatus is the status of the DigitalOcean droplet
+                  instance for this machine.
+                type: string
+              ready:
+                description: Ready is true when the provider resource is ready.
+                type: boolean
+              volumes:
+                description: Volumes contains the DigitalOcean droplet associated
+                  block storage volumes.
+                items:
+                  description: DOVolume defines a DO Block Storage Volume.
+                  properties:
+                    id:
+                      type: string
+                  required:
+                  - id
+                  type: object
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: null
+  storedVersions: null
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: capdo-system/capdo-serving-cert
+    controller-gen.kubebuilder.io/version: v0.13.0
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    cluster.x-k8s.io/v1beta1: v1beta1
+    clusterctl.cluster.x-k8s.io: ""
+  name: domachinetemplates.infrastructure.cluster.x-k8s.io
+spec:
+  conversion:
+    strategy: Webhook
+    webhook:
+      clientConfig:
+        caBundle: Cg==
+        service:
+          name: capdo-webhook-service
+          namespace: capdo-system
+          path: /convert
+      conversionReviewVersions:
+      - v1
+      - v1beta1
+  group: infrastructure.cluster.x-k8s.io
+  names:
+    categories:
+    - cluster-api
+    kind: DOMachineTemplate
+    listKind: DOMachineTemplateList
+    plural: domachinetemplates
+    singular: domachinetemplate
+  scope: Namespaced
+  versions:
+  - name: v1alpha4
+    schema:
+      openAPIV3Schema:
+        description: DOMachineTemplate is the Schema for the domachinetemplates API.
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DOMachineTemplateSpec defines the desired state of DOMachineTemplate.
+            properties:
+              template:
+                description: DOMachineTemplateResource describes the data needed to
+                  create am DOMachine from a template.
+                properties:
+                  spec:
+                    description: Spec is the specification of the desired behavior
+                      of the machine.
+                    properties:
+                      additionalTags:
+                        description: AdditionalTags is an optional set of tags to
+                          add to DigitalOcean resources managed by the DigitalOcean
+                          provider.
+                        items:
+                          type: string
+                        type: array
+                      dataDisks:
+                        description: DataDisks specifies the parameters that are used
+                          to add one or more data disks to the machine
+                        items:
+                          description: DataDisk specifies the parameters that are
+                            used to add a data disk to the machine.
+                          properties:
+                            diskSizeGB:
+                              description: DiskSizeGB is the size in GB to assign
+                                to the data disk.
+                              format: int64
+                              type: integer
+                            filesystemLabel:
+                              description: 'FilesystemLabel is the label that is applied
+                                to the created filesystem. Character limits apply:
+                                16 for ext4; 12 for xfs. May only be used in conjunction
+                                with filesystemType.'
+                              type: string
+                            filesystemType:
+                              description: FilesystemType to be used on the volume.
+                                When provided the volume will be automatically formatted.
+                              type: string
+                            nameSuffix:
+                              description: NameSuffix is the suffix to be appended
+                                to the machine name to generate the disk name. Each
+                                disk name will be in format <dropletName>-<nameSuffix>.
+                              type: string
+                          required:
+                          - diskSizeGB
+                          - nameSuffix
+                          type: object
+                        type: array
+                      image:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: Droplet image can be image id or slug. See https://developers.digitalocean.com/documentation/v2/#list-all-images
+                        x-kubernetes-int-or-string: true
+                      providerID:
+                        description: ProviderID is the unique identifier as specified
+                          by the cloud provider.
+                        type: string
+                      size:
+                        description: Droplet size. It must be known DigitalOcean droplet
+                          size. See https://developers.digitalocean.com/documentation/v2/#list-all-sizes
+                        type: string
+                      sshKeys:
+                        description: SSHKeys is the ssh key id or fingerprint to attach
+                          in DigitalOcean droplet. It must be available on DigitalOcean
+                          account. See https://developers.digitalocean.com/documentation/v2/#list-all-keys
+                        items:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          x-kubernetes-int-or-string: true
+                        type: array
+                    required:
+                    - image
+                    - size
+                    - sshKeys
+                    type: object
+                required:
+                - spec
+                type: object
+            required:
+            - template
+            type: object
+        type: object
+    served: true
+    storage: false
+  - name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: DOMachineTemplate is the Schema for the domachinetemplates API.
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object. Servers should convert recognized schemas to the latest
+              internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents. Servers may infer this from the endpoint the client
+              submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DOMachineTemplateSpec defines the desired state of DOMachineTemplate.
+            properties:
+              template:
+                description: DOMachineTemplateResource describes the data needed to
+                  create am DOMachine from a template.
+                properties:
+                  spec:
+                    description: Spec is the specification of the desired behavior
+                      of the machine.
+                    properties:
+                      additionalTags:
+                        description: AdditionalTags is an optional set of tags to
+                          add to DigitalOcean resources managed by the DigitalOcean
+                          provider.
+                        items:
+                          type: string
+                        type: array
+                      dataDisks:
+                        description: DataDisks specifies the parameters that are used
+                          to add one or more data disks to the machine
+                        items:
+                          description: DataDisk specifies the parameters that are
+                            used to add a data disk to the machine.
+                          properties:
+                            diskSizeGB:
+                              description: DiskSizeGB is the size in GB to assign
+                                to the data disk.
+                              format: int64
+                              type: integer
+                            filesystemLabel:
+                              description: 'FilesystemLabel is the label that is applied
+                                to the created filesystem. Character limits apply:
+                                16 for ext4; 12 for xfs. May only be used in conjunction
+                                with filesystemType.'
+                              type: string
+                            filesystemType:
+                              description: FilesystemType to be used on the volume.
+                                When provided the volume will be automatically formatted.
+                              type: string
+                            nameSuffix:
+                              description: NameSuffix is the suffix to be appended
+                                to the machine name to generate the disk name. Each
+                                disk name will be in format <dropletName>-<nameSuffix>.
+                              type: string
+                          required:
+                          - diskSizeGB
+                          - nameSuffix
+                          type: object
+                        type: array
+                      image:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        description: Droplet image can be image id or slug. See https://developers.digitalocean.com/documentation/v2/#list-all-images
+                        x-kubernetes-int-or-string: true
+                      providerID:
+                        description: ProviderID is the unique identifier as specified
+                          by the cloud provider.
+                        type: string
+                      size:
+                        description: Droplet size. It must be known DigitalOcean droplet
+                          size. See https://developers.digitalocean.com/documentation/v2/#list-all-sizes
+                        type: string
+                      sshKeys:
+                        description: SSHKeys is the ssh key id or fingerprint to attach
+                          in DigitalOcean droplet. It must be available on DigitalOcean
+                          account. See https://developers.digitalocean.com/documentation/v2/#list-all-keys
+                        items:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          x-kubernetes-int-or-string: true
+                        type: array
+                    required:
+                    - image
+                    - size
+                    - sshKeys
+                    type: object
+                required:
+                - spec
+                type: object
+            required:
+            - template
+            type: object
+        type: object
+    served: true
+    storage: true
+status:
+  acceptedNames:
+    kind: ""
+    plural: ""
+  conditions: null
+  storedVersions: null
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+  name: capdo-manager
+  namespace: capdo-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+  name: capdo-leader-election-role
+  namespace: capdo-system
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - configmaps/status
+  verbs:
+  - get
+  - update
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+  name: capdo-manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - subjectaccessreviews
+  verbs:
+  - create
+- apiGroups:
+  - cluster.x-k8s.io
+  resources:
+  - clusters
+  - clusters/status
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cluster.x-k8s.io
+  resources:
+  - machines
+  - machines/status
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - doclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - doclusters/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - domachines
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - domachines/status
+  verbs:
+  - get
+  - patch
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+  name: capdo-proxy-role
+rules:
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - subjectaccessreviews
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+  name: capdo-leader-election-rolebinding
+  namespace: capdo-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: capdo-leader-election-role
+subjects:
+- kind: ServiceAccount
+  name: capdo-manager
+  namespace: capdo-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+  name: capdo-manager-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: capdo-manager-role
+subjects:
+- kind: ServiceAccount
+  name: capdo-manager
+  namespace: capdo-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+  name: capdo-proxy-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: capdo-proxy-role
+subjects:
+- kind: ServiceAccount
+  name: capdo-manager
+  namespace: capdo-system
+---
+apiVersion: v1
+data:
+  credentials: null
+kind: Secret
+metadata:
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+  name: capdo-manager-bootstrap-credentials
+  namespace: capdo-system
+type: Opaque
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    prometheus.io/port: "8443"
+    prometheus.io/scheme: https
+    prometheus.io/scrape: "true"
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+    control-plane: capdo-controller-manager
+  name: capdo-controller-manager-metrics-service
+  namespace: capdo-system
+spec:
+  ports:
+  - name: https
+    port: 8443
+    targetPort: https
+  selector:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    control-plane: capdo-controller-manager
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+  name: capdo-webhook-service
+  namespace: capdo-system
+spec:
+  ports:
+  - port: 443
+    targetPort: webhook-server
+  selector:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+    control-plane: capdo-controller-manager
+  name: capdo-controller-manager
+  namespace: capdo-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      cluster.x-k8s.io/provider: infrastructure-digitalocean
+      control-plane: capdo-controller-manager
+  strategy: {}
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+      labels:
+        cluster.x-k8s.io/provider: infrastructure-digitalocean
+        control-plane: capdo-controller-manager
+    spec:
+      containers:
+      - args:
+        - --leader-elect
+        - --diagnostics-address=:8444
+        - --insecure-diagnostics=false
         env:
-          - name: DIGITALOCEAN_ACCESS_TOKEN
-            valueFrom:
-              secretKeyRef:
-                name: do-credentials
-                key: DIGITALOCEAN_ACCESS_TOKEN
-          - name: DIGITALOCEAN_API_URL
-            value: https://api.devcloud.amd.com
+        - name: DIGITALOCEAN_ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: credentials
+              name: capdo-manager-bootstrap-credentials
+        image: registry.k8s.io/cluster-api-do/cluster-api-do-controller:v1.6.0
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: healthz
+        name: manager
+        ports:
+        - containerPort: 9443
+          name: webhook-server
+          protocol: TCP
+        - containerPort: 9440
+          name: healthz
+          protocol: TCP
+        - containerPort: 8444
+          name: metrics
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: healthz
+        resources: {}
+        volumeMounts:
+        - mountPath: /tmp/k8s-webhook-server/serving-certs
+          name: cert
+          readOnly: true
+      - args:
+        - --secure-listen-address=0.0.0.0:8443
+        - --upstream=http://127.0.0.1:8080/
+        - --logtostderr=true
+        - --v=10
+        image: gcr.io/kubebuilder/kube-rbac-proxy:v0.4.1
+        name: kube-rbac-proxy
+        ports:
+        - containerPort: 8443
+          name: https
+        resources: {}
+      serviceAccountName: capdo-manager
+      terminationGracePeriodSeconds: 10
+      tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/master
+      volumes:
+      - name: cert
+        secret:
+          defaultMode: 420
+          secretName: capdo-webhook-service-cert
+status: {}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: capdo-system/capdo-serving-cert
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+  name: capdo-mutating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1beta1
+  clientConfig:
+    service:
+      name: capdo-webhook-service
+      namespace: capdo-system
+      path: /mutate-infrastructure-cluster-x-k8s-io-v1beta1-docluster
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  name: default.docluster.infrastructure.cluster.x-k8s.io
+  rules:
+  - apiGroups:
+    - infrastructure.cluster.x-k8s.io
+    apiVersions:
+    - v1beta1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - doclusters
+  sideEffects: None
+- admissionReviewVersions:
+  - v1beta1
+  clientConfig:
+    service:
+      name: capdo-webhook-service
+      namespace: capdo-system
+      path: /mutate-infrastructure-cluster-x-k8s-io-v1beta1-doclustertemplate
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  name: default.doclustertemplate.infrastructure.cluster.x-k8s.io
+  rules:
+  - apiGroups:
+    - infrastructure.cluster.x-k8s.io
+    apiVersions:
+    - v1beta1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - doclustertemplates
+  sideEffects: None
+- admissionReviewVersions:
+  - v1beta1
+  clientConfig:
+    service:
+      name: capdo-webhook-service
+      namespace: capdo-system
+      path: /mutate-infrastructure-cluster-x-k8s-io-v1beta1-domachine
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  name: default.domachine.infrastructure.cluster.x-k8s.io
+  rules:
+  - apiGroups:
+    - infrastructure.cluster.x-k8s.io
+    apiVersions:
+    - v1beta1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - domachines
+  sideEffects: None
+- admissionReviewVersions:
+  - v1beta1
+  clientConfig:
+    service:
+      name: capdo-webhook-service
+      namespace: capdo-system
+      path: /mutate-infrastructure-cluster-x-k8s-io-v1beta1-domachinetemplate
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  name: default.domachinetemplate.infrastructure.cluster.x-k8s.io
+  rules:
+  - apiGroups:
+    - infrastructure.cluster.x-k8s.io
+    apiVersions:
+    - v1beta1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - domachinetemplates
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  annotations:
+    cert-manager.io/inject-ca-from: capdo-system/capdo-serving-cert
+  labels:
+    cluster.x-k8s.io/provider: infrastructure-digitalocean
+    clusterctl.cluster.x-k8s.io: ""
+  name: capdo-validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1beta1
+  clientConfig:
+    service:
+      name: capdo-webhook-service
+      namespace: capdo-system
+      path: /validate-infrastructure-cluster-x-k8s-io-v1beta1-docluster
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  name: validation.docluster.infrastructure.cluster.x-k8s.io
+  rules:
+  - apiGroups:
+    - infrastructure.cluster.x-k8s.io
+    apiVersions:
+    - v1beta1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - doclusters
+  sideEffects: None
+- admissionReviewVersions:
+  - v1beta1
+  clientConfig:
+    service:
+      name: capdo-webhook-service
+      namespace: capdo-system
+      path: /validate-infrastructure-cluster-x-k8s-io-v1beta1-doclustertemplate
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  name: validation.doclustertemplate.infrastructure.cluster.x-k8s.io
+  rules:
+  - apiGroups:
+    - infrastructure.cluster.x-k8s.io
+    apiVersions:
+    - v1beta1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - doclustertemplates
+  sideEffects: None
+- admissionReviewVersions:
+  - v1beta1
+  clientConfig:
+    service:
+      name: capdo-webhook-service
+      namespace: capdo-system
+      path: /validate-infrastructure-cluster-x-k8s-io-v1beta1-domachine
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  name: validation.domachine.infrastructure.cluster.x-k8s.io
+  rules:
+  - apiGroups:
+    - infrastructure.cluster.x-k8s.io
+    apiVersions:
+    - v1beta1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - domachines
+  sideEffects: None
+- admissionReviewVersions:
+  - v1beta1
+  clientConfig:
+    service:
+      name: capdo-webhook-service
+      namespace: capdo-system
+      path: /validate-infrastructure-cluster-x-k8s-io-v1beta1-domachinetemplate
+  failurePolicy: Fail
+  matchPolicy: Equivalent
+  name: validation.domachinetemplate.infrastructure.cluster.x-k8s.io
+  rules:
+  - apiGroups:
+    - infrastructure.cluster.x-k8s.io
+    apiVersions:
+    - v1beta1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - domachinetemplates
+  sideEffects: None
