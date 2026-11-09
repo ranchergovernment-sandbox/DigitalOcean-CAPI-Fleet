@@ -3,10 +3,6 @@
 
 # Namespace where the provider and its secret live (created by Fleet if missing)
 defaultNamespace: capdo-system
-namespace:
-  annotations:
-    # Optional: auto-import CAPI clusters created in this namespace into Rancher
-    cluster-api.cattle.io/rancher-auto-import: "true"
 
 # The operator owns provider status fields — don't let drift remediation revert them
 diff:
