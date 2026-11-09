@@ -50,7 +50,6 @@ spec:
     strategy: Webhook
     webhook:
       clientConfig:
-        caBundle: Cg==
         service:
           name: capdo-webhook-service
           namespace: capdo-system
@@ -453,7 +452,6 @@ spec:
     strategy: Webhook
     webhook:
       clientConfig:
-        caBundle: Cg==
         service:
           name: capdo-webhook-service
           namespace: capdo-system
@@ -654,7 +652,6 @@ spec:
     strategy: Webhook
     webhook:
       clientConfig:
-        caBundle: Cg==
         service:
           name: capdo-webhook-service
           namespace: capdo-system
@@ -1061,7 +1058,6 @@ spec:
     strategy: Webhook
     webhook:
       clientConfig:
-        caBundle: Cg==
         service:
           name: capdo-webhook-service
           namespace: capdo-system
