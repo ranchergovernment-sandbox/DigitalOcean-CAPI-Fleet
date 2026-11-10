@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/build-slem.yaml
-      - elemental/do-exporter/build/**
+      - elemental/slem/build/**
     tags: ['v*']
   pull_request:
     branches: [main]
@@ -61,7 +61,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: elemental/do-exporter/build/
+          context: elemental/slem/build/
           file: Containerfile
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
