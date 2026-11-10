@@ -69,6 +69,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: elemental/do-exporter/build/
+          file: elemental/do-exporter/build/Containerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
