@@ -24,7 +24,7 @@ spec:
                 capabilities:
                   drop:
                     - ALL
-              image: <your-registry>/do-seedimage-publisher:v1.0.0
+              image: "ghcr.io/ranchergovernment-sandbox/digitalocean-capi-fleet/do-seedimage-publisher"
               envFrom:
                 - configMapRef:
                     name: do-seedimage-publisher-config
