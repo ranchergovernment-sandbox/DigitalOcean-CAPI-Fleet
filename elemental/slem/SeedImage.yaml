@@ -1,0 +1,20 @@
+apiVersion: elemental.cattle.io/v1beta1
+kind: SeedImage
+metadata:
+  name: elemental-devcloud
+  namespace: fleet-default
+  labels:
+    do-export.cattle.io/enabled: "true"
+  annotations:
+    do-export.cattle.io/name: "elemental-devcloud"
+    do-export.cattle.io/version: "v1.0.0"
+    do-export.cattle.io/distribution: "opensuse"
+spec:
+  type: raw                     # raw is what you convert with qemu-img
+  baseImage: registry.suse.com/suse/sl-micro/6.0/baremetal-os-container:2.1.1-3.29
+  cleanupAfterMinutes: 0        # keep the artifact around for the CronJob to pick up
+  registrationRef:
+    apiVersion: elemental.cattle.io/v1beta1
+    kind: MachineRegistration
+    name: elemental-devcloud
+    namespace: fleet-default

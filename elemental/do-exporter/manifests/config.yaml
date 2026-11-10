@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: do-seedimage-publisher-config
+  namespace: do-image-publisher
+data:
+  SEEDIMAGE_NAMESPACE: "fleet-default"
+  SPACES_BUCKET: "dev-os-images"
+  SPACES_REGION: "atl1"
+  DO_REGION: "atl1"
+  SIGNED_URL_HOURS: "4"
+  WORKDIR: "/work"

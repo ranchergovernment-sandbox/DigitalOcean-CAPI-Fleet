@@ -1,0 +1,33 @@
+apiVersion: elemental.cattle.io/v1beta1
+kind: MachineRegistration
+metadata:
+  name: elemental-devcloud
+  namespace: fleet-default
+spec:
+  config:
+    cloud-config:
+      users:
+        - name: root
+          passwd: root
+    elemental:
+      install:
+        device-selector:
+          - key: Name
+            operator: In
+            values:
+              - /dev/sda
+              - /dev/vda
+              - /dev/nvme0
+          - key: Size
+            operator: Gt
+            values:
+              - 25Gi
+        reboot: true
+        snapshotter:
+          maxSnaps: 2
+          type: btrfs
+        tty: ttyS0,115200n8
+      reset:
+        reboot: true
+        reset-oem: true
+        reset-persistent: true

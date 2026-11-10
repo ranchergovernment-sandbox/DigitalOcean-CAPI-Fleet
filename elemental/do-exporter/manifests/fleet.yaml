@@ -1,0 +1,11 @@
+namespace: do-image-publisher
+defaultNamespace: do-image-publisher
+
+# The publisher must run on the Rancher management ("local") cluster,
+# because SeedImages and their download URLs live there.
+targets:
+  - clusterSelector:
+      matchExpressions:
+        - key: provisioning.cattle.io/cluster-name
+          operator: In
+          values: ["local"]

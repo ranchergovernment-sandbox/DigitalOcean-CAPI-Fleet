@@ -1,0 +1,36 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: do-seedimage-publisher
+  namespace: do-image-publisher
+spec:
+  schedule: "*/30 * * * *"        # SeedImages are cleaned up after cleanupAfterMinutes
+  concurrencyPolicy: Forbid       # (default 60) — run frequently enough to catch them
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          serviceAccountName: do-seedimage-publisher
+          restartPolicy: Never
+          containers:
+            - name: publish
+              image: <your-registry>/do-seedimage-publisher:v1.0.0
+              envFrom:
+                - configMapRef:
+                    name: do-seedimage-publisher-config
+                - secretRef:
+                    name: do-seedimage-publisher
+              resources:
+                requests: { cpu: 500m, memory: 512Mi }
+                limits:   { cpu: "2",  memory: 2Gi }
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+          volumes:
+            - name: work
+              emptyDir:
+                sizeLimit: 40Gi   # room for raw + qcow2; use a PVC if builds are big

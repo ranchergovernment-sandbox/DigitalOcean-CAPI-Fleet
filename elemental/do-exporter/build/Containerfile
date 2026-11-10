@@ -1,0 +1,19 @@
+FROM registry.suse.com/bci/bci-base:15.6
+
+RUN zypper -n ref && zypper -n install --no-recommends \
+      ca-certificates curl jq qemu-tools s3cmd python3 gzip tar \
+    && zypper clean -a
+# kubectl (pin the minor to match your cluster)
+ARG K8S_VERSION=v1.31.0
+RUN curl -sfL "https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/amd64/kubectl" \
+      -o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl
+
+# doctl (check https://github.com/digitalocean/doctl/releases for current version)
+ARG DOCTL_VERSION=1.114.0
+RUN curl -sfL "https://github.com/digitalocean/doctl/releases/download/v${DOCTL_VERSION}/doctl-${DOCTL_VERSION}-linux-amd64.tar.gz" \
+      | tar -xz -C /usr/local/bin doctl
+
+COPY export-seedimages.sh /usr/local/bin/export-seedimages.sh
+RUN chmod +x /usr/local/bin/export-seedimages.sh
+
+ENTRYPOINT ["/usr/local/bin/export-seedimages.sh"]
