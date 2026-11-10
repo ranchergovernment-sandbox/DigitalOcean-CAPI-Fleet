@@ -13,7 +13,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}   # owner/elemental-devcloud
+  IMAGE_NAME: ${{ github.repository }}/elemental-devcloud   # owner/elemental-devcloud
 
 permissions:
   contents: read

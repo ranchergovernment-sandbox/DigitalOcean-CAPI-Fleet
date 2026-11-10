@@ -11,7 +11,7 @@ metadata:
     do-export.cattle.io/distribution: "opensuse"
 spec:
   type: raw                     # raw is what you convert with qemu-img
-  baseImage: registry.suse.com/suse/sl-micro/6.0/baremetal-os-container:2.1.1-3.29
+  baseImage: ghcr.io/ranchergovernment-sandbox/digitalocean-capi-fleet/elemental-devcloud:latest
   cleanupAfterMinutes: 0        # keep the artifact around for the CronJob to pick up
   registrationRef:
     apiVersion: elemental.cattle.io/v1beta1
