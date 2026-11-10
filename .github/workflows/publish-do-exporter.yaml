@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "image/**"
+      - "elemental/do-exporter/build/**"
       - ".github/workflows/publish-image.yml"
     tags: ["v*"]
   workflow_dispatch:
