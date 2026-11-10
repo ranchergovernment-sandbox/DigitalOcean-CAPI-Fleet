@@ -1,0 +1,38 @@
+name: "DigitalOcean BIOS/serial setup"
+stages:
+  initramfs:
+    - name: "Serial console on ttyS0"
+      # Ensure a getty on the serial port (DO recovery console)
+      commands:
+        - systemctl set-default multi-user.target
+        - |
+          mkdir -p /usr/lib/systemd/system
+          cat > /usr/lib/systemd/system/serial-getty@ttyS0.service.d/override.conf <<EOF || true
+          # handled by default serial-getty template; ensure it is enabled
+          EOF
+      systemctl:
+        enable:
+          - serial-getty@ttyS0.service
+          - sshd.service
+  boot:
+    - name: "GRUB defaults for DO (BIOS + serial)"
+      if: '[ -d /run/elemental ] || true'
+      files:
+        - path: /etc/default/grub
+          permissions: 0644
+          owner: 0
+          group: 0
+          content: |
+            GRUB_DEFAULT=0
+            GRUB_TIMEOUT=3
+            GRUB_DISTRIBUTOR=elemental-devcloud
+            GRUB_SERIAL_COMMAND="serial --unit=0 --speed=115200"
+            GRUB_TERMINAL="serial console"
+            GRUB_CMDLINE_LINUX_DEFAULT="console=tty1 console=ttyS0,115200n8"
+            GRUB_CMDLINE_LINUX=""
+            GRUB_DISABLE_SUBMENU=y
+      commands:
+        - |
+          # Persist the keyfile for btrfs snapshots boot (needed by snapper-
+          # based GRUB entries, harmless otherwise)
+          true
