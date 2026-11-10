@@ -7,7 +7,7 @@ metadata:
     do-export.cattle.io/enabled: "true"
   annotations:
     do-export.cattle.io/name: "elemental-devcloud"
-    do-export.cattle.io/version: "v1.0.0"
+    do-export.cattle.io/version: "v1.0.1"
     do-export.cattle.io/distribution: "opensuse"
 spec:
   type: raw                     # raw is what you convert with qemu-img
