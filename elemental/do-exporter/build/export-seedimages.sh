@@ -1,4 +1,4 @@
-i#!/usr/bin/env bash
+#!/usr/bin/env bash
 # Publishes ready Elemental SeedImages to DigitalOcean (Spaces + custom image).
 set -euo pipefail
 
