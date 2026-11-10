@@ -60,8 +60,6 @@ for i in $(seq 0 $((count - 1))); do
   ANNOT=$(echo "$SEEDIMAGES" | jq -r ".items[$i].metadata.annotations // {}")
   URL=$(echo "$SEEDIMAGES" | jq -r ".items[$i].status.downloadURL // empty")
   CHECKSUM=$(echo "$SEEDIMAGES" | jq -r ".items[$i].status.checksum // empty")
-  READY=$(echo "$SEEDIMAGES" | jq -r \
-    '.items[0].status.conditions[]? | select(.type=="SeedImageReady") | .status' 2>/dev/null || true)
 
   [ -n "$URL" ] || { log "SKIP $SI: no downloadURL yet"; continue; }
 
@@ -124,3 +122,13 @@ for i in $(seq 0 $((count - 1))); do
       --image-url "$SIGNED_URL" \
       --image-distribution "$DISTRIB" \
       --region "$DO_REGION" \
+      --output json | jq '{id, name, status}'
+  fi
+
+  # --- 6. record state ---------------------------------------------------------
+  [ -n "$CHECKSUM" ] && state_set "$STATE_KEY" "$CHECKSUM"
+  state_set "last-published-$UID" "$DO_IMAGE"
+  log "Done: $DO_IMAGE"
+done
+
+log "Run complete"
