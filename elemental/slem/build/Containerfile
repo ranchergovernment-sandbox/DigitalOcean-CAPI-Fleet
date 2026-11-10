@@ -2,7 +2,7 @@ ARG ELEMENTAL_CLI=ghcr.io/rancher/elemental-toolkit/elemental-cli:v2.1.1
 
 FROM ${ELEMENTAL_CLI} AS elemental
 
-FROM registry.suse.com/suse/sl-micro/6.0/baremetal-os-container:2.1.1-3.29
+FROM registry.suse.com/suse/sl-micro/6.2/baremetal-os-container:v2.3.1-8.118
 
 # v2.x: binary lives at /usr/bin/elemental; /install-root no longer exists
 COPY --from=elemental /usr/bin/elemental /usr/bin/elemental
@@ -11,7 +11,6 @@ COPY --from=elemental /usr/bin/elemental /usr/bin/elemental
 RUN set -eu; \
     zypper --non-interactive install --no-recommends \
       grub2-i386-pc \
-      grub2-snapper-plugin \
       e2fsprogs \
       parted \
       && zypper clean -a
