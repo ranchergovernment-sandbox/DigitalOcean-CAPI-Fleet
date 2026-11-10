@@ -15,7 +15,7 @@ SPACES_KEY="${SPACES_KEY:?}"
 SPACES_SECRET="${SPACES_SECRET:?}"
 
 # --- s3cmd config -----------------------------------------------------------
-S3CFG="$HOME/.s3cfg"
+S3CFG="$WORKDIR/.s3cfg"
 cat > "$S3CFG" <<EOF
 [default]
 access_key = ${SPACES_KEY}

@@ -26,6 +26,8 @@ RUN zypper -n install --no-recommends \
   tar
 RUN zypper clean -a
 
+
+
 # doctl static binary (arch-aware)
 RUN curl -sfL "https://github.com/digitalocean/doctl/releases/download/v${DOCTL_VERSION}/doctl-${DOCTL_VERSION}-linux-${TARGETARCH}.tar.gz" \
       | tar -xz -C /usr/local/bin doctl && chmod +x /usr/local/bin/doctl
@@ -33,7 +35,12 @@ RUN curl -sfL "https://github.com/digitalocean/doctl/releases/download/v${DOCTL_
  RUN curl -sfL "https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
       -o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl
 
+
+RUN useradd -u 1000 -m -s /bin/bash publisher \
+ && mkdir -p /work && chown 1000:1000 /work
+
 COPY export-seedimages.sh /usr/local/bin/export-seedimages.sh
 RUN chmod +x /usr/local/bin/export-seedimages.sh
 
+USER 1000:1000
 ENTRYPOINT ["/usr/local/bin/export-seedimages.sh"]
