@@ -27,4 +27,4 @@ subjects:
 roleRef:
   kind: Role
   name: do-seedimage-reader
-  apiGroup: rbac.authorization.k8s.i
+  apiGroup: rbac.authorization.k8s.io
