@@ -6,7 +6,7 @@ ARG K8S_VERSION=v1.36.6
 ARG DOCTL_VERSION=1.114.0
 
 # Cloud:Tools (s3cmd) — no SLE_15_SP6 build exists; SP5 rpm is noarch, works on 15.6
-RUN zypper -n addrepo -G -f https://download.opensuse.org/repositories/Cloud:/Tools/SLE_15_SP5/Cloud:Tools.repo cloud-tools
+RUN zypper -n addrepo -G -f https://download.opensuse.org/repositories/Cloud:/Tools/SLE_15_SP5/ cloud-tools
 RUN zypper -n --gpg-auto-import-keys ref
 RUN zypper -n install --no-recommends \
       ca-certificates 
