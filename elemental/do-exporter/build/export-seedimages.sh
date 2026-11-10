@@ -71,8 +71,9 @@ for i in $(seq 0 $((count - 1))); do
   DO_IMAGE="${NAME}-$(slug "$VERSION")"
   STATE_KEY="published-$SI_UID"
 
-  if [ -n "$CHECKSUM" ] && [ "$(state_get "$STATE_KEY")" = "$CHECKSUM" ]; then
-    log "SKIP $SI: checksum $CHECKSUM already published as $DO_IMAGE"
+  STATE_VAL="${CHECKSUM:-$URL}"           # URL is unique per seed image build
+  if [ "$(state_get "$STATE_KEY")" = "$STATE_VAL" ]; then
+    log "SKIP $SI: already published as $DO_IMAGE"
     continue
   fi
 
@@ -85,7 +86,7 @@ for i in $(seq 0 $((count - 1))); do
   curl -sfk --retry 3 -o "$RAW" "$URL"
 
   # --- 2. verify checksum ----------------------------------------------------
-  if [ -n "$CHECKSUM" ]; then
+  if [  -n "$CHECKSUM" ]; then
     if command -v sha256sum >/dev/null; then
       ACTUAL=$(sha256sum "$RAW" | cut -d' ' -f1)
     else
@@ -122,11 +123,11 @@ for i in $(seq 0 $((count - 1))); do
       --image-url "$SIGNED_URL" \
       --image-distribution "$DISTRIB" \
       --region "$DO_REGION" \
-      --output json | jq '{id, name, status}'
+      --output json | jq 'if type=="array" then .[0] else . end | {id, name, status}'
   fi
 
   # --- 6. record state ---------------------------------------------------------
-  [ -n "$CHECKSUM" ] && state_set "$STATE_KEY" "$CHECKSUM"
+  state_set "$STATE_KEY" "$CHECKSUM"
   state_set "last-published-$SI_UID" "$DO_IMAGE"
   log "Done: $DO_IMAGE"
 done
