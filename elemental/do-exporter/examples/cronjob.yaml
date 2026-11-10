@@ -17,7 +17,13 @@ spec:
           serviceAccountName: do-seedimage-publisher
           restartPolicy: Never
           containers:
-            - name: publish
+            - name: do-image-publisher
+              securityContext:
+                allowPrivilegeEscalation: false
+                runAsNonRoot: true
+                capabilities:
+                  drop:
+                    - ALL
               image: <your-registry>/do-seedimage-publisher:v1.0.0
               envFrom:
                 - configMapRef:

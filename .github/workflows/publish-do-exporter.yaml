@@ -1,0 +1,79 @@
+name: Build & publish publisher image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "image/**"
+      - ".github/workflows/publish-image.yml"
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      k8s_version:
+        description: "kubectl version to bake in (e.g. v1.31.4)"
+        required: false
+        default: ""
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/do-seedimage-publisher
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write          # required to push to ghcr.io
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (for arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Resolve kubectl version
+        id: k8s
+        run: |
+          if [ -n "${{ inputs.k8s_version }}" ]; then
+            echo "version=${{ inputs.k8s_version }}" >> "$GITHUB_OUTPUT"
+          else
+            # follow the latest stable kubectl release
+            v=$(curl -sfL https://dl.k8s.io/release/stable.txt)
+            echo "version=${v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./image
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            K8S_VERSION=${{ steps.k8s.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
