@@ -15,7 +15,7 @@ RUN zypper -n install --no-recommends \
 RUN zypper -n install --no-recommends \
   jq 
 RUN zypper -n install --no-recommends \
-  qemu-Tools
+  qemu-tools
 RUN zypper -n install --no-recommends \
  s3cmd
 RUN zypper -n install --no-recommends \
