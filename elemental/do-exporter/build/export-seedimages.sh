@@ -56,7 +56,7 @@ log "Found $count opted-in SeedImage(s) in $SEEDIMAGE_NS"
 
 for i in $(seq 0 $((count - 1))); do
   SI=$(echo "$SEEDIMAGES" | jq -r ".items[$i].metadata.name")
-  UID=$(echo "$SEEDIMAGES" | jq -r ".items[$i].metadata.uid")
+  SI_UID=$(echo "$SEEDIMAGES" | jq -r ".items[$i].metadata.SI_UID")
   ANNOT=$(echo "$SEEDIMAGES" | jq -r ".items[$i].metadata.annotations // {}")
   URL=$(echo "$SEEDIMAGES" | jq -r ".items[$i].status.downloadURL // empty")
   CHECKSUM=$(echo "$SEEDIMAGES" | jq -r ".items[$i].status.checksum // empty")
@@ -69,7 +69,7 @@ for i in $(seq 0 $((count - 1))); do
   [ -n "$VERSION" ] || VERSION=$(date -u +%Y%m%d-%H%M%S)
   DISTRIB=$(echo "$ANNOT" | jq -r '."do-export.cattle.io/distribution" // "opensuse"')
   DO_IMAGE="${NAME}-$(slug "$VERSION")"
-  STATE_KEY="published-$UID"
+  STATE_KEY="published-$SI_UID"
 
   if [ -n "$CHECKSUM" ] && [ "$(state_get "$STATE_KEY")" = "$CHECKSUM" ]; then
     log "SKIP $SI: checksum $CHECKSUM already published as $DO_IMAGE"
@@ -127,7 +127,7 @@ for i in $(seq 0 $((count - 1))); do
 
   # --- 6. record state ---------------------------------------------------------
   [ -n "$CHECKSUM" ] && state_set "$STATE_KEY" "$CHECKSUM"
-  state_set "last-published-$UID" "$DO_IMAGE"
+  state_set "last-published-$SI_UID" "$DO_IMAGE"
   log "Done: $DO_IMAGE"
 done
 
