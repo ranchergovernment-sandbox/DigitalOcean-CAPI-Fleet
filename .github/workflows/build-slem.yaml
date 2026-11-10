@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - .github/workflows/build-slem.yaml
       - elemental/do-exporter/build/**
     tags: ['v*']
   pull_request:
