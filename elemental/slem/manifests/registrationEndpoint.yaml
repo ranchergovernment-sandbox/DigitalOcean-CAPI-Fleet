@@ -11,6 +11,7 @@ spec:
           passwd: root
     elemental:
       install:
+        firmware: bios
         device-selector:
           - key: Name
             operator: In
