@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Publishes ready Elemental SeedImages to DigitalOcean (Spaces + custom image).
-# Inventory-first: gathers SeedImages, Spaces objects and DO custom images up
-# front, then only does the work (download/convert/upload/create) that's missing.
+# Queue-based pipeline: inventory -> classify into queues -> process queues.
+#   [new-elemental] : seed images with a build we haven't seen before
+#   [upload-s3]     : Spaces object missing or stale, needs download+convert+upload
+#   [create-do]      : DO custom image missing, needs image create
 set -euo pipefail
 
 SEEDIMAGE_NS="${SEEDIMAGE_NAMESPACE:-fleet-default}"
@@ -43,9 +45,8 @@ state_set() { # state_set <key> <value>
 
 slug() { echo "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' - | sed 's/-\{2,\}/-/g; s/^-*//; s/-*$//'; }
 
-# === INVENTORY (gather everything before doing any work) ======================
+# === INVENTORY =================================================================
 
-# 1) opted-in SeedImages
 # Opt in with:  labels: do-export.cattle.io/enabled: "true"
 # Optional annotations:
 #   do-export.cattle.io/name:          sl-micro-62-base     (default: seedimage name)
@@ -58,90 +59,68 @@ count=$(echo "$SEEDIMAGES" | jq '.items | length')
 log "Inventory: $count opted-in SeedImage(s) in $SEEDIMAGE_NS"
 [ "$count" -gt 0 ] || { log "Nothing to do"; exit 0; }
 
-# 2) existing DO custom images (droplet images)
 log "Inventory: listing DO custom images"
 DO_IMAGES=$(doctl compute image list-user -o json)
 do_image_exists() { echo "$DO_IMAGES" | jq -e --arg n "$1" \
   'map(select(.name == $n)) | length > 0' >/dev/null; }
 
-# 3) existing objects in the Spaces bucket
 log "Inventory: listing s3://$SPACES_BUCKET/"
 S3_OBJECTS=$("${S3CMD[@]}" ls "s3://$SPACES_BUCKET/" 2>/dev/null || true)
 s3_object_exists() { echo "$S3_OBJECTS" | grep -qF "$1"; }
-log "Inventory: $(echo "$DO_IMAGES" | jq 'length') custom image(s), $(echo "$S3_OBJECTS" | grep -c . || true) object(s) in Spaces"
 
-# === EXPORT LOOP (only fills the gaps) ========================================
+# === CLASSIFY (build the three queues) ==========================================
+
+declare -a Q_NEW=() Q_UPLOAD=() Q_CREATE=()
+declare -A R_URL=() R_UID=() R_DOIMG=() R_CKSUM=() R_DISTRIB=()
 
 for i in $(seq 0 $((count - 1))); do
   SI=$(echo "$SEEDIMAGES" | jq -r ".items[$i].metadata.name")
+  URL=$(echo "$SEEDIMAGES" | jq -r ".items[$i].status.downloadURL // empty")
+  [ -n "$URL" ] || { log "SKIP $SI: no downloadURL yet"; continue; }
+
   SI_UID=$(echo "$SEEDIMAGES" | jq -r ".items[$i].metadata.uid")   # NOT 'UID' — readonly in bash
   ANNOT=$(echo "$SEEDIMAGES" | jq -r ".items[$i].metadata.annotations // {}")
-  URL=$(echo "$SEEDIMAGES" | jq -r ".items[$i].status.downloadURL // empty")
   CHECKSUM=$(echo "$SEEDIMAGES" | jq -r ".items[$i].status.checksum // empty")
-
-  [ -n "$URL" ] || { log "SKIP $SI: no downloadURL yet"; continue; }
 
   NAME=$(slug "$(echo "$ANNOT" | jq -r '."do-export.cattle.io/name" // empty' || true)")
   [ -n "$NAME" ] || NAME=$(slug "$SI")
   VERSION=$(echo "$ANNOT" | jq -r '."do-export.cattle.io/version" // empty' | tr -d ' ')
   [ -n "$VERSION" ] || VERSION=$(date -u +%Y%m%d-%H%M%S)
   DISTRIB=$(echo "$ANNOT" | jq -r '."do-export.cattle.io/distribution" // "opensuse"')
-  DO_IMAGE="${NAME}-$(slug "$VERSION")"
-  S3_KEY="$DO_IMAGE.qcow2"
 
-  # already registered as a DO custom image? nothing to do
-  if do_image_exists "$DO_IMAGE"; then
-    log "SKIP $SI: DO image '$DO_IMAGE' already exists"
-    state_set "last-published-$SI_UID" "$DO_IMAGE"
-    continue
-  fi
+  R_URL["$SI"]="$URL"; R_UID["$SI"]="$SI_UID"
+  R_DOIMG["$SI"]="${NAME}-$(slug "$VERSION")"
+  R_CKSUM["$SI"]="$CHECKSUM"; R_DISTRIB["$SI"]="$DISTRIB"
 
-  # upload only if the object is missing or was uploaded from a different build
-  if s3_object_exists "$S3_KEY" && [ "$(state_get "object-$DO_IMAGE")" = "$URL" ]; then
-    log "Reuse s3://$SPACES_BUCKET/$S3_KEY (same build)"
-  else
-    log "Export $SI -> $DO_IMAGE (checksum: ${CHECKSUM:-unknown})"
-    RAW="$SI.raw"
+  BUILD_SEEN=$(state_get "build-$SI_UID")
 
-    # --- download (Rancher endpoint may use self-signed certs -> -k) --------
-    log "Downloading $URL"
-    curl -sfk --retry 3 -o "$RAW" "$URL"
+  # queue 1: new elemental build (downloadURL differs from the last one we saw)
+  [ "$BUILD_SEEN" = "$URL" ] || Q_NEW+=("$SI")
 
-    # --- verify checksum (if the operator provides one) ---------------------
-    if [ -n "$CHECKSUM" ]; then
-      ACTUAL=$(sha256sum "$RAW" | cut -d' ' -f1)
-      [ "$ACTUAL" = "$CHECKSUM" ] || { log "ERROR $SI: checksum mismatch ($ACTUAL != $CHECKSUM)"; rm -f "$RAW"; continue; }
-      log "Checksum OK"
-    else
-      log "WARN $SI: no status.checksum, skipping verification"
+  # queue 2+3 only matter if the DO image doesn't exist yet (images are immutable)
+  if ! do_image_exists "${R_DOIMG[$SI]}"; then
+    Q_CREATE+=("$SI")
+    if ! s3_object_exists "${R_DOIMG[$SI]}.qcow2" || [ "$BUILD_SEEN" != "$URL" ]; then
+      Q_UPLOAD+=("$SI")
     fi
-
-    # --- convert ---------------------------------------------------------------
-    log "Converting to qcow2"
-    qemu-img convert -f raw -O qcow2 -c "$RAW" "$S3_KEY"
-    rm -f "$RAW"
-
-    # --- upload -----------------------------------------------------------------
-    log "Uploading s3://$SPACES_BUCKET/$S3_KEY"
-    "${S3CMD[@]}" put "$S3_KEY" "s3://$SPACES_BUCKET/$S3_KEY" \
-      --acl-private --guess-mime-type
-    rm -f "$S3_KEY"
-    state_set "object-$DO_IMAGE" "$URL"
   fi
 
-  # --- register as DO custom image ----------------------------------------------
-  EXPIRES=$(( $(date +%s) + SIGNED_URL_HOURS * 3600 ))
-  SIGNED_URL=$("${S3CMD[@]}" signurl "s3://$SPACES_BUCKET/$S3_KEY" "$EXPIRES")
-
-  log "Creating DO custom image $DO_IMAGE in $DO_REGION"
-  doctl compute image create "$DO_IMAGE" \
-    --image-url "$SIGNED_URL" \
-    --image-distribution "$DISTRIB" \
-    --region "$DO_REGION" \
-    --output json | jq 'if type=="array" then .[0] else . end | {id, name, status}'
-
-  state_set "last-published-$SI_UID" "$DO_IMAGE"
-  log "Done: $DO_IMAGE"
+  # remember this build so Q_NEW only reports genuinely new builds
+  state_set "build-$SI_UID" "$URL"
 done
 
-log "Run complete"
+qprint() { # qprint <label> <items...>
+  local label="$1"; shift
+  if [ "$#" -gt 0 ]; then log "Queue [$label]: $# item(s) -> $*"
+  else log "Queue [$label]: empty"; fi
+}
+qprint new-elemental "${Q_NEW[@]}"
+qprint upload-s3 "${Q_UPLOAD[@]}"
+qprint create-do "${Q_CREATE[@]}"
+
+[ ${#Q_UPLOAD[@]} -eq 0 ] && [ ${#Q_CREATE[@]} -eq 0 ] && { log "Nothing to do"; exit 0; }
+
+# === PROCESS [upload-s3] ========================================================
+
+FAILED=" "
+for SI in ${Q_UPLOAD[@]+"${Q_UPLOAD[@]}"}; do
