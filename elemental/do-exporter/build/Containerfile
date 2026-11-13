@@ -1,46 +1,41 @@
 FROM registry.suse.com/bci/bci-base:15.6
 
-
-ARG TARGETARCH          # filled by buildx (amd64 / arm64)
-ARG K8S_VERSION=v1.36.6
+# buildx fills TARGETARCH automatically (amd64 / arm64)
+ARG TARGETARCH
+ARG K8S_VERSION=v1.31.0
 ARG DOCTL_VERSION=1.114.0
 
-# Cloud:Tools (s3cmd) — no SLE_15_SP6 build exists; SP5 rpm is noarch, works on 15.6
+# Cloud:Tools (s3cmd) — no SLE_15_SP6 build of this repo exists; the SP5 rpm
+# is noarch and its deps resolve against the SLE-BCI repo.
+# IMPORTANT: point addrepo at the repo BASEURL, not the .repo file — SLE 15's
+# zypper treats the URI as a baseurl and stores it verbatim, so using the
+# Cloud:Tools.repo URL makes the refresh fail with
+# "Repository type can't be determined" (exit code 4).
 RUN zypper -n addrepo -G -f https://download.opensuse.org/repositories/Cloud:/Tools/SLE_15_SP5/ cloud-tools
 RUN zypper -n --gpg-auto-import-keys ref
 RUN zypper -n install --no-recommends \
-      ca-certificates 
-RUN zypper -n install --no-recommends \
-  curl 
-RUN zypper -n install --no-recommends \
-  jq 
-RUN zypper -n install --no-recommends \
-  qemu-tools
-RUN zypper -n install --no-recommends \
- s3cmd
-RUN zypper -n install --no-recommends \
-  python3 
-RUN zypper -n install --no-recommends \
-  gzip
-RUN zypper -n install --no-recommends \
-  tar
-RUN zypper clean -a
+      ca-certificates curl jq qemu-tools s3cmd python3 gzip tar \
+      grub2 grub2-i386-pc \
+ && zypper clean -a
 
+# kubectl binary (arch-aware)
+RUN curl -sfL "https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
+      -o /usr/local/bin/kubectl \
+ && chmod +x /usr/local/bin/kubectl
 
+# doctl official static binary (not packaged for SLE 15; arch-aware)
+RUN GOARCH="${TARGETARCH}" \
+ && curl -sfL "https://github.com/digitalocean/doctl/releases/download/v${DOCTL_VERSION}/doctl-${DOCTL_VERSION}-linux-${GOARCH}.tar.gz" \
+      | tar -xz -C /usr/local/bin doctl \
+ && chmod +x /usr/local/bin/doctl
 
-# doctl static binary (arch-aware)
-RUN curl -sfL "https://github.com/digitalocean/doctl/releases/download/v${DOCTL_VERSION}/doctl-${DOCTL_VERSION}-linux-${TARGETARCH}.tar.gz" \
-      | tar -xz -C /usr/local/bin doctl && chmod +x /usr/local/bin/doctl
- 
- RUN curl -sfL "https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
-      -o /usr/local/bin/kubectl && chmod +x /usr/local/bin/kubectl
-
-
+# non-root runtime user (numeric UID: runAsNonRoot admission checks the image USER)
 RUN useradd -u 1000 -m -s /bin/bash publisher \
  && mkdir -p /work && chown 1000:1000 /work
 
+COPY scripts/ /usr/local/bin/scripts/
 COPY export-seedimages.sh /usr/local/bin/export-seedimages.sh
-RUN chmod +x /usr/local/bin/export-seedimages.sh
+RUN chmod +x /usr/local/bin/export-seedimages.sh /usr/local/bin/scripts/*.sh
 
 USER 1000:1000
 ENTRYPOINT ["/usr/local/bin/export-seedimages.sh"]
