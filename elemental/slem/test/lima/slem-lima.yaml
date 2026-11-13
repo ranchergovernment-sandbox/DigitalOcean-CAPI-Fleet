@@ -1,0 +1,9 @@
+vmType: qemu
+arch: x86_64
+firmware:
+  legacyBIOS: true   # SeaBIOS, same as a DO droplet
+images:
+  - location: ./elemental-devcloud-2026-11-10T12_18_12Z.raw
+    arch: x86_64
+plain: true          # skip Lima's mounts/ports — we only care about boot
+
