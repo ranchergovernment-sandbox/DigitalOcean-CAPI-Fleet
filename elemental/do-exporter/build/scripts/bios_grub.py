@@ -77,8 +77,10 @@ def main():
 
     # --- patch core's first (diskboot) sector --------------------------
     dboot = bytearray(core[:SS])
-    # clean the blocklist area (placeholders) before writing our entries
-    for i in range(FIRST_BLOCK_OFF - 12 * 64, SS):
+    # Clean the blocklist area (mkimage placeholder entries) before writing
+    # ours. Clear ONLY offsets (FIRST_BLOCK_OFF - 12*4)..511: a negative range
+    # start would wrap and wipe the whole diskboot sector (code included).
+    for i in range(FIRST_BLOCK_OFF - 12 * 4, SS):
         dboot[i] = 0
     if nsec > 1:
         e = FIRST_BLOCK_OFF

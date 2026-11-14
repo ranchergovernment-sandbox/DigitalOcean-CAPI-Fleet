@@ -63,16 +63,25 @@ add_bios_boot() { # add_bios_boot <raw-image> (logs via $SI)
   cat > "$WORKDIR/bios-early.cfg" <<'EOG'
 # Early GRUB config embedded into core.img (i386-pc / BIOS). Try the known
 # Elemental/SUSE grub.cfg locations, then the COS_STATE label, then give up.
+# Output goes to BOTH VGA console (DO droplet web console) and COM1 serial
+# (local QEMU -serial / DO recovery console), so boot-stage failures are
+# visible wherever you look. Each search prints a marker so a silent death
+# tells you exactly which stage never ran.
+serial --unit=0 --speed=115200
+terminal_output console serial
+echo "BIOS GRUB: stage2 reached, searching for guest grub.cfg ..."
 search --no-floppy --set=root --file /boot/grub2/grub.cfg
 if [ -n "${root}" ]; then
   set prefix=($root)/boot/grub2
   configfile ($root)/boot/grub2/grub.cfg
 fi
+echo "BIOS GRUB: /boot/grub2/grub.cfg not found, trying /grub2 ..."
 search --no-floppy --set=root --file /grub2/grub.cfg
 if [ -n "${root}" ]; then
   set prefix=($root)/grub2
   configfile ($root)/grub2/grub.cfg
 fi
+echo "BIOS GRUB: /grub2/grub.cfg not found, trying COS_STATE label ..."
 search --no-floppy --set=root --label COS_STATE
 if [ -n "${root}" ]; then
   set prefix=($root)/boot/grub2
@@ -87,7 +96,7 @@ EOG
     -o "$WORKDIR/bios-core.img" \
     part_gpt biosdisk disk fat ext2 btrfs xfs squash4 \
     search search_fs_file search_label search_fs_uuid \
-    configfile echo test sleep ls loopback boot linux \
+    serial configfile echo test sleep ls loopback boot linux \
     normal gzio loadenv halt reboot help \
     all_video gfxterm font bitmap bitmap_scale png jpeg tga video video_fb
   if ! CORE_SIZE=$(stat -c%s "$WORKDIR/bios-core.img" 2>/dev/null) || [ -z "$CORE_SIZE" ]; then

@@ -5,7 +5,7 @@ import struct
 import sys
 import zlib
 
-BIOS_BOOT_GUID = "21686148-6449-6E6F-744E-656564454649"
+BIOS_BOOT_GUID = "21686148-6449-6E6F-744E-656564424949"
 SS = 512  # only handles 512-byte sectors
 
 

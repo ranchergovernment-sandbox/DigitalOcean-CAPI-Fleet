@@ -1,0 +1,9 @@
+vmType: qemu
+arch: x86_64
+firmware:
+  legacyBIOS: true   # SeaBIOS, same as a DO droplet
+images:
+  - location: ./SL-Micro.x86_64-6.2-Base-qcow-GM.qcow2
+    arch: x86_64
+plain: true          # skip Lima's mounts/ports — we only care about boot
+

@@ -1,0 +1,9 @@
+vmType: qemu
+arch: x86_64
+firmware:
+  legacyBIOS: true   # SeaBIOS, same as a DO droplet
+images:
+  - location: ./openSUSE-MicroOS.x86_64-kvm-and-xen.qcow2
+    arch: x86_64
+plain: true          # skip Lima's mounts/ports — we only care about boot
+
