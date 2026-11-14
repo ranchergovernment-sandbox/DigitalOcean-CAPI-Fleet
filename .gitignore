@@ -1,1 +1,2 @@
-elemental/slem/test/lima/elemental-devcloud-2026-11-10T12_18_12Z.raw
+elemental/slem/test/lima/*.raw
+elemental/slem/test/lima/*.qcow
