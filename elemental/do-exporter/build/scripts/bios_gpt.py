@@ -98,16 +98,27 @@ def main():
         die(1, "backup GPT header not at last LBA (unexpected layout)")
 
     def fix_header(h, entries_crc):
+        # GPT spec: header CRC is computed over bytes 0..91 ONLY (with the
+        # CRC field itself zeroed). CRC-ing the full 512 bytes yields a value
+        # the Linux kernel rejects -> it falls back to the protective MBR and
+        # the disk appears to have NO partitions (GRUB ignores CRCs, so GRUB
+        # still boots while dracut emergency-modes).
         h = bytearray(h)
         h[88:92] = struct.pack("<I", entries_crc)
         h[16:20] = b"\x00" * 4
-        crc = zlib.crc32(bytes(h)) & 0xFFFFFFFF
+        crc = zlib.crc32(bytes(h[:92])) & 0xFFFFFFFF
         h[16:20] = struct.pack("<I", crc)
         return bytes(h)
 
+    # backup entries array: num_entries * entry_size BYTES = 32 sectors for
+    # the usual 128x128 layout -- NOT num_entries sectors (that mis-placement
+    # used to overwrite the tail of the last data partition).
+    ents_bytes = num_entries * entry_size
+    backup_entries_lba = backup_hdr_lba - ((ents_bytes + SS - 1) // SS)
+
     f.seek(entry_lba * SS)
     f.write(entries_new)
-    f.seek((backup_hdr_lba - num_entries) * SS)
+    f.seek(backup_entries_lba * SS)
     f.write(entries_new)
     f.seek(SS)
     f.write(fix_header(hdr, pe_crc))
@@ -115,9 +126,32 @@ def main():
     bh = bytearray(f.read(SS))
     if bytes(bh[0:8]) != b"EFI PART":
         die(1, "no backup GPT header (unexpected layout)")
-    bh[72:80] = struct.pack("<Q", backup_hdr_lba - num_entries)
+    bh[72:80] = struct.pack("<Q", backup_entries_lba)
     f.seek(backup_hdr_lba * SS)
     f.write(fix_header(bytes(bh), pe_crc))
+
+    # --- kernel-grade self-check: exactly the validation Linux does ---------
+    def hdr_crc_ok(h):
+        # header CRC lives at offset 16 (entries CRC at 88); CRC is computed
+        # over bytes 0..91 with the CRC field itself zeroed
+        hb = bytearray(h[:92])
+        hb[16:20] = b"\x00" * 4
+        return struct.unpack("<I", h[16:20])[0] == (zlib.crc32(bytes(hb)) & 0xFFFFFFFF)
+
+    f.seek(SS)
+    ph = f.read(SS)
+    if not hdr_crc_ok(ph):
+        die(1, "self-check failed: primary GPT header CRC invalid")
+    f.seek(entry_lba * SS)
+    if zlib.crc32(f.read(ents_bytes)) & 0xFFFFFFFF != struct.unpack("<I", ph[88:92])[0]:
+        die(1, "self-check failed: primary GPT entries CRC invalid")
+    f.seek(backup_hdr_lba * SS)
+    bhh = f.read(SS)
+    if not hdr_crc_ok(bhh):
+        die(1, "self-check failed: backup GPT header CRC invalid")
+    f.seek(backup_entries_lba * SS)
+    if zlib.crc32(f.read(ents_bytes)) & 0xFFFFFFFF != struct.unpack("<I", bhh[88:92])[0]:
+        die(1, "self-check failed: backup GPT entries CRC invalid")
     f.flush()
     f.close()
 
