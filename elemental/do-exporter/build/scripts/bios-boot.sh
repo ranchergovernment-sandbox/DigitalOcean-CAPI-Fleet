@@ -13,20 +13,25 @@
 #   2. grub2-mkimage builds an i386-pc core.img whose embedded early config
 #      locates the guest's own /boot/grub2/grub.cfg (elemental's grub.cfg
 #      is platform-aware, so under BIOS it uses the plain `linux` command).
-#   3. grub2-bios-setup installs GRUB into the image file via a device map:
-#      it writes core.img into the BIOS Boot partition and — critically —
-#      PATCHES the LBA of core.img into the MBR's boot.img (the
-#      kernel_sector field) and the sector blocklist into core.img's
-#      first (diskboot) sector. Those are build-time placeholders in the
-#      packaged files: a plain `dd` of boot.img/core.img ships them
-#      unpatched, so boot.img jumps to a wrong sector and the machine
-#      silently dies right after SeaBIOS' "Booting from hard drive".
-#      bios-setup operates on the image file directly (no root/loop mount).
-# Container needs: python3, grub2-mkimage, grub2-bios-setup and the grub2
-# i386-pc modules (Containerfile installs grub2 + grub2-i386-pc on amd64).
+#   3. bios_grub.py installs GRUB into the image file the way
+#      grub2-bios-setup would: it writes core.img into the BIOS Boot
+#      partition and — critically — PATCHES the LBA of core.img into the
+#      MBR's boot.img (the kernel_sector field) and the sector blocklist
+#      into core.img's first (diskboot) sector. Those are build-time
+#      placeholders in the packaged files: a plain `dd` of
+#      boot.img/core.img ships them unpatched, so boot.img jumps to a wrong
+#      sector and the machine silently dies right after SeaBIOS'
+#      "Booting from hard drive". bios_grub.py does the byte patching
+#      itself because grub2-bios-setup enumerates the host's block
+#      devices via /sys/block and fails in containers that cannot see the
+#      node's device nodes (e.g. "failed to get canonical path of
+#      /dev/nvme0n1p4").
+# Container needs: python3, grub2-mkimage and the grub2 i386-pc modules
+# (Containerfile installs grub2 + grub2-i386-pc on amd64).
 # Disable with BIOS_SUPPORT=false.
 BIOS_SUPPORT="${BIOS_SUPPORT:-true}"
 BIOS_PY="${SCRIPTS_DIR}/bios_gpt.py"
+BIOS_GRUB_PY="${SCRIPTS_DIR}/bios_grub.py"
 
 bios_partition() { # bios_partition <raw-image> -> echoes "start end sectors"
   python3 "$BIOS_PY" "$1" 512 | jq -r '"\(.start) \(.end) \(.size_sectors)"'
@@ -48,9 +53,6 @@ add_bios_boot() { # add_bios_boot <raw-image> (logs via $SI)
   local mkimage
   mkimage="$(command -v grub2-mkimage || command -v grub-mkimage || true)"
   [ -n "$mkimage" ] || { log "ERROR [$SI] grub2-mkimage not found"; return 1; }
-  local bios_setup
-  bios_setup="$(command -v grub2-bios-setup || command -v grub-bios-setup || true)"
-  [ -n "$bios_setup" ] || { log "ERROR [$SI] grub2-bios-setup not found (install grub2-i386-pc in the container image)"; return 1; }
 
   # 1. BIOS Boot partition (idempotent)
   RES=$(bios_partition "$RAW") || { log "ERROR [$SI] BIOS partition creation failed"; return 1; }
@@ -97,25 +99,15 @@ EOG
     return 1
   fi
 
-  # 3. Install: bios-setup embeds core.img at the start of the BIOS Boot
-  #    partition and patches MBR boot.img + the diskboot sector blocklist.
-  #    SUSE grub2-bios-setup treats --directory as the ARCH directory
-  #    itself (default /usr/share/grub2/i386-pc) and resolves boot.img and
-  #    core.img relative to it -- --boot-image/--core-image paths are also
-  #    taken relative to --directory, so stage a clean arch dir in $WORKDIR.
-  local setup_dir="$WORKDIR/grub-setup/i386-pc"
-  rm -rf "$WORKDIR/grub-setup"; mkdir -p "$setup_dir"
-  cp "$WORKDIR/bios-core.img" "$setup_dir/core.img"
-  cp "$grub_pc_dir/boot.img" "$setup_dir/boot.img"
-  # absolute path - the exporter runs with CWD=$WORKDIR, but the grub device
-  # map and bios-setup need the fully-qualified image path
-  printf '(hd0) %s\n' "$(readlink -f "$RAW")" > "$WORKDIR/device.map"
-
-  if ! "$bios_setup" --directory="$setup_dir" \
-        --device-map="$WORKDIR/device.map" --skip-fs-probe \
-        '(hd0)' >"$WORKDIR/bios-setup.log" 2>&1; then
-    log "ERROR [$SI] grub2-bios-setup failed:"
-    sed 's/^/ERROR [$SI]   /' "$WORKDIR/bios-setup.log" >&2
+  # 3. Install: bios_grub.py embeds core.img at the start of the BIOS Boot
+  #    partition, patches MBR boot.img (kernel_sector -> START, boot_drive
+  #    0xFF, partition table preserved) and core's diskboot blocklist —
+  #    pure byte patching, no device enumeration, no root needed.
+  local grub_out
+  if ! grub_out=$(python3 "$BIOS_GRUB_PY" "$RAW" "$START" \
+        "$grub_pc_dir/boot.img" "$WORKDIR/bios-core.img" 2>&1); then
+    log "ERROR [$SI] GRUB install failed:"
+    sed 's/^/ERROR [$SI]   /' <<<"$grub_out" >&2
     return 1
   fi
 
@@ -127,5 +119,5 @@ EOG
     log "ERROR [$SI] BIOS GRUB install inconsistent (MBR kernel_sector=$mbr_lba, expected $START)"
     return 1
   fi
-  log "[$SI] BIOS GRUB installed via grub2-bios-setup (core.img $CORE_SIZE B, MBR kernel_sector -> LBA $START)"
+  log "[$SI] BIOS GRUB installed (core.img $CORE_SIZE B -> LBA $START, MBR kernel_sector patched)"
 }
