@@ -10,8 +10,8 @@ process_upload_queue() {
     DO_IMAGE="${R_DOIMG[$SI]}"; URL="${R_URL[$SI]}"; CHECKSUM="${R_CKSUM[$SI]}"
     RAW="$SI.raw"; S3_KEY="$DO_IMAGE.qcow2"
 
-    log "[$SI] downloading (missing or stale object)"
-    curl -sfk --retry 3 -o "$RAW" "$URL"
+    run_step "[$SI] downloading (missing or stale object)" \
+      curl -sfk --retry 3 -o "$RAW" "$URL"
 
     if [ -n "$CHECKSUM" ]; then
       ACTUAL=$(sha256sum "$RAW" | cut -d' ' -f1)
@@ -26,12 +26,12 @@ process_upload_queue() {
       rm -f "$RAW"; FAILED+="$SI "; continue
     fi
 
-    log "[$SI] converting to qcow2"
-    qemu-img convert -f raw -O qcow2 -c "$RAW" "$S3_KEY"
+    run_step "[$SI] converting to qcow2" \
+      qemu-img convert -f raw -O qcow2 -c "$RAW" "$S3_KEY"
     rm -f "$RAW"
 
-    log "[$SI] uploading s3://$SPACES_BUCKET/$S3_KEY"
-    "${S3CMD[@]}" put "$S3_KEY" "s3://$SPACES_BUCKET/$S3_KEY" \
+    run_step "[$SI] uploading s3://$SPACES_BUCKET/$S3_KEY" \
+      "${S3CMD[@]}" put "$S3_KEY" "s3://$SPACES_BUCKET/$S3_KEY" \
       --acl-private --guess-mime-type
     rm -f "$S3_KEY"
 
