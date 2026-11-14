@@ -34,8 +34,7 @@ RUN useradd -u 1000 -m -s /bin/bash publisher \
  && mkdir -p /work && chown 1000:1000 /work
 
 COPY scripts/ /usr/local/bin/scripts/
-COPY export-seedimages.sh /usr/local/bin/export-seedimages.sh
-RUN chmod +x /usr/local/bin/export-seedimages.sh /usr/local/bin/scripts/*.sh
+RUN chmod +x /usr/local/bin/scripts/*.sh
 
 USER 1000:1000
-ENTRYPOINT ["/usr/local/bin/export-seedimages.sh"]
+ENTRYPOINT ["/usr/local/bin/scripts/export-seedimages.sh"]
