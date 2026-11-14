@@ -13,11 +13,18 @@
 #   2. grub2-mkimage builds an i386-pc core.img whose embedded early config
 #      locates the guest's own /boot/grub2/grub.cfg (elemental's grub.cfg
 #      is platform-aware, so under BIOS it uses the plain `linux` command).
-#   3. GRUB boot.img goes into the MBR (first 440 bytes, partition table is
-#      preserved), core.img into the BIOS Boot partition.
-# Container needs: python3, grub2-mkimage and grub2 i386-pc modules
-# (Containerfile installs grub2 + grub2-i386-pc). Disable with
-# BIOS_SUPPORT=false.
+#   3. grub2-bios-setup installs GRUB into the image file via a device map:
+#      it writes core.img into the BIOS Boot partition and — critically —
+#      PATCHES the LBA of core.img into the MBR's boot.img (the
+#      kernel_sector field) and the sector blocklist into core.img's
+#      first (diskboot) sector. Those are build-time placeholders in the
+#      packaged files: a plain `dd` of boot.img/core.img ships them
+#      unpatched, so boot.img jumps to a wrong sector and the machine
+#      silently dies right after SeaBIOS' "Booting from hard drive".
+#      bios-setup operates on the image file directly (no root/loop mount).
+# Container needs: python3, grub2-mkimage, grub2-bios-setup and the grub2
+# i386-pc modules (Containerfile installs grub2 + grub2-i386-pc on amd64).
+# Disable with BIOS_SUPPORT=false.
 BIOS_SUPPORT="${BIOS_SUPPORT:-true}"
 BIOS_PY="${SCRIPTS_DIR}/bios_gpt.py"
 
@@ -41,6 +48,9 @@ add_bios_boot() { # add_bios_boot <raw-image> (logs via $SI)
   local mkimage
   mkimage="$(command -v grub2-mkimage || command -v grub-mkimage || true)"
   [ -n "$mkimage" ] || { log "ERROR [$SI] grub2-mkimage not found"; return 1; }
+  local bios_setup
+  bios_setup="$(command -v grub2-bios-setup || command -v grub-bios-setup || true)"
+  [ -n "$bios_setup" ] || { log "ERROR [$SI] grub2-bios-setup not found (install grub2-i386-pc in the container image)"; return 1; }
 
   # 1. BIOS Boot partition (idempotent)
   RES=$(bios_partition "$RAW") || { log "ERROR [$SI] BIOS partition creation failed"; return 1; }
@@ -76,15 +86,49 @@ EOG
     part_gpt biosdisk disk fat ext2 btrfs xfs squash4 \
     search search_fs_file search_label search_fs_uuid \
     configfile echo test sleep ls loopback boot linux initrd \
-    normal gzio loadenv halt reboot help
+    normal gzio loadenv halt reboot help \
+    all_video gfxterm font bitmap bitmap_scale png jpeg tga video video_fb
   CORE_SIZE=$(stat -c%s "$WORKDIR/bios-core.img")
   if [ "$CORE_SIZE" -gt $((SECTORS * 512)) ]; then
     log "ERROR [$SI] core.img ($CORE_SIZE B) exceeds BIOS Boot partition ($((SECTORS * 512)) B)"
     return 1
   fi
 
-  # 3. MBR boot code + core.img into the BIOS Boot partition
-  dd if="$grub_pc_dir/boot.img" of="$RAW" bs=440 count=1 conv=notrunc status=none
-  dd if="$WORKDIR/bios-core.img" of="$RAW" bs=512 seek="$START" conv=notrunc status=none
-  log "[$SI] BIOS GRUB installed (boot.img -> MBR, core.img $CORE_SIZE B -> LBA $START)"
+  # 3. Install: bios-setup embeds core.img at the start of the BIOS Boot
+  #    partition and patches MBR boot.img + the diskboot sector blocklist.
+  #    It resolves boot.img/core.img relative to --directory, laid out as
+  #    <dir>/i386-pc/{boot.img,core.img} (SUSE layout).
+  local setup_dir="$WORKDIR/grub-setup"
+  rm -rf "$setup_dir"; mkdir -p "$setup_dir/i386-pc"
+  cp "$WORKDIR/bios-core.img" "$setup_dir/i386-pc/core.img"
+  cp "$grub_pc_dir/boot.img" "$setup_dir/i386-pc/boot.img"
+  # absolute path - the exporter runs with CWD=$WORKDIR, but the grub device
+  # map and bios-setup need the fully-qualified image path
+  printf '(hd0) %s\n' "$(readlink -f "$RAW")" > "$WORKDIR/device.map"
+
+  if ! "$bios_setup" --directory="$setup_dir" \
+        --device-map="$WORKDIR/device.map" --skip-fs-probe \
+        '(hd0)' >"$WORKDIR/bios-setup.log" 2>&1; then
+    # Fallback: resolve boot/core images by explicit path in case this
+    # grub build expects them directly in --directory.
+    if ! "$bios_setup" --directory="$setup_dir/i386-pc" \
+          --boot-image="$setup_dir/i386-pc/boot.img" \
+          --core-image="$setup_dir/i386-pc/core.img" \
+          --device-map="$WORKDIR/device.map" --skip-fs-probe \
+          '(hd0)' >>"$WORKDIR/bios-setup.log" 2>&1; then
+      log "ERROR [$SI] grub2-bios-setup failed:"
+      sed 's/^/ERROR [$SI]   /' "$WORKDIR/bios-setup.log" >&2
+      return 1
+    fi
+  fi
+
+  # Verify the MBR really got the patched boot code: kernel_sector (offset
+  # 92) must point at the BIOS Boot partition, not a placeholder 0/1.
+  local mbr_lba
+  mbr_lba=$(dd if="$RAW" bs=1 skip=92 count=8 status=none | od -An -tu8 | tr -d ' ')
+  if [ "$mbr_lba" != "$START" ]; then
+    log "ERROR [$SI] BIOS GRUB install inconsistent (MBR kernel_sector=$mbr_lba, expected $START)"
+    return 1
+  fi
+  log "[$SI] BIOS GRUB installed via grub2-bios-setup (core.img $CORE_SIZE B, MBR kernel_sector -> LBA $START)"
 }
