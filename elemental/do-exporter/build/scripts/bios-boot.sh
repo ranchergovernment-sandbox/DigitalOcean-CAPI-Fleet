@@ -85,10 +85,13 @@ EOG
     -o "$WORKDIR/bios-core.img" \
     part_gpt biosdisk disk fat ext2 btrfs xfs squash4 \
     search search_fs_file search_label search_fs_uuid \
-    configfile echo test sleep ls loopback boot linux initrd \
+    configfile echo test sleep ls loopback boot linux \
     normal gzio loadenv halt reboot help \
     all_video gfxterm font bitmap bitmap_scale png jpeg tga video video_fb
-  CORE_SIZE=$(stat -c%s "$WORKDIR/bios-core.img")
+  if ! CORE_SIZE=$(stat -c%s "$WORKDIR/bios-core.img" 2>/dev/null) || [ -z "$CORE_SIZE" ]; then
+    log "ERROR [$SI] grub2-mkimage failed (no core.img produced)"
+    return 1
+  fi
   if [ "$CORE_SIZE" -gt $((SECTORS * 512)) ]; then
     log "ERROR [$SI] core.img ($CORE_SIZE B) exceeds BIOS Boot partition ($((SECTORS * 512)) B)"
     return 1
@@ -96,12 +99,14 @@ EOG
 
   # 3. Install: bios-setup embeds core.img at the start of the BIOS Boot
   #    partition and patches MBR boot.img + the diskboot sector blocklist.
-  #    It resolves boot.img/core.img relative to --directory, laid out as
-  #    <dir>/i386-pc/{boot.img,core.img} (SUSE layout).
-  local setup_dir="$WORKDIR/grub-setup"
-  rm -rf "$setup_dir"; mkdir -p "$setup_dir/i386-pc"
-  cp "$WORKDIR/bios-core.img" "$setup_dir/i386-pc/core.img"
-  cp "$grub_pc_dir/boot.img" "$setup_dir/i386-pc/boot.img"
+  #    SUSE grub2-bios-setup treats --directory as the ARCH directory
+  #    itself (default /usr/share/grub2/i386-pc) and resolves boot.img and
+  #    core.img relative to it -- --boot-image/--core-image paths are also
+  #    taken relative to --directory, so stage a clean arch dir in $WORKDIR.
+  local setup_dir="$WORKDIR/grub-setup/i386-pc"
+  rm -rf "$WORKDIR/grub-setup"; mkdir -p "$setup_dir"
+  cp "$WORKDIR/bios-core.img" "$setup_dir/core.img"
+  cp "$grub_pc_dir/boot.img" "$setup_dir/boot.img"
   # absolute path - the exporter runs with CWD=$WORKDIR, but the grub device
   # map and bios-setup need the fully-qualified image path
   printf '(hd0) %s\n' "$(readlink -f "$RAW")" > "$WORKDIR/device.map"
@@ -109,17 +114,9 @@ EOG
   if ! "$bios_setup" --directory="$setup_dir" \
         --device-map="$WORKDIR/device.map" --skip-fs-probe \
         '(hd0)' >"$WORKDIR/bios-setup.log" 2>&1; then
-    # Fallback: resolve boot/core images by explicit path in case this
-    # grub build expects them directly in --directory.
-    if ! "$bios_setup" --directory="$setup_dir/i386-pc" \
-          --boot-image="$setup_dir/i386-pc/boot.img" \
-          --core-image="$setup_dir/i386-pc/core.img" \
-          --device-map="$WORKDIR/device.map" --skip-fs-probe \
-          '(hd0)' >>"$WORKDIR/bios-setup.log" 2>&1; then
-      log "ERROR [$SI] grub2-bios-setup failed:"
-      sed 's/^/ERROR [$SI]   /' "$WORKDIR/bios-setup.log" >&2
-      return 1
-    fi
+    log "ERROR [$SI] grub2-bios-setup failed:"
+    sed 's/^/ERROR [$SI]   /' "$WORKDIR/bios-setup.log" >&2
+    return 1
   fi
 
   # Verify the MBR really got the patched boot code: kernel_sector (offset
