@@ -13,9 +13,8 @@ ARG DOCTL_VERSION=1.114.0
 # "Repository type can't be determined" (exit code 4).
 RUN zypper -n addrepo -G -f https://download.opensuse.org/repositories/Cloud:/Tools/SLE_15_SP5/ cloud-tools
 RUN zypper -n --gpg-auto-import-keys ref
-RUN zypper -n install --no-recommends \
-      ca-certificates curl jq qemu-tools s3cmd python3 gzip tar \
-      grub2 grub2-i386-pc \
+RUN for PACKAGE in ca-certificates curl jq qemu-tools s3cmd python3 gzip tar grub2 grub2-i386-pc ;do
+  zypper -n install --no-recommends ${PACKAGE} \
  && zypper clean -a
 
 # kubectl binary (arch-aware)
