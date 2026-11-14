@@ -26,8 +26,18 @@
 #      devices via /sys/block and fails in containers that cannot see the
 #      node's device nodes (e.g. "failed to get canonical path of
 #      /dev/nvme0n1p4").
-# Container needs: python3, grub2-mkimage and the grub2 i386-pc modules
-# (Containerfile installs grub2 + grub2-i386-pc on amd64).
+#   4. Elemental's ESP grub.cfg loads /grub_oem_env, which ships a kernelcmd
+#      pre-expanded at BUILD time with empty labels (root=LABEL=,
+#      elemental.mode= ...): that poisoned value boots into dracut
+#      emergency mode. The env load happens INSIDE Elemental's own grub.cfg,
+#      so the only override point left is the /grubcustom/custom.cfg hook it
+#      sources after all env loads and before the menu entries. We inject
+#      that file into the ESP with mtools (FAT, no mounting) with the proven
+#      recovery cmdline; menuentries that successfully source bootargs.cfg
+#      rebuild kernelcmd per-entry afterwards.
+# Container needs: python3, grub2-mkimage, the grub2 i386-pc modules and
+# mtools for the ESP custom.cfg injection (Containerfile installs
+# grub2 + grub2-i386-pc + mtools on amd64).
 # Disable with BIOS_SUPPORT=false.
 BIOS_SUPPORT="${BIOS_SUPPORT:-true}"
 BIOS_PY="${SCRIPTS_DIR}/bios_gpt.py"
@@ -69,7 +79,32 @@ add_bios_boot() { # add_bios_boot <raw-image> (logs via $SI)
 # tells you exactly which stage never ran.
 serial --unit=0 --speed=115200
 terminal_output console serial
-echo "BIOS GRUB: stage2 reached, searching for guest grub.cfg ..."
+echo "BIOS GRUB: stage2 reached, loading elemental environment ..."
+# Elemental's menu entries are driven by variables from a grubenv file that
+# lives on the OEM partition. GRUB's normal auto-load only checks
+# ${prefix}/grubenv (which does not exist on the ESP), so WITHOUT this the
+# boot comes up with every variable empty: root=LABEL=, elemental.mode=,
+# elemental.oemlabel= ... and the kernel emergency-modes.
+search --no-floppy --set=root --file /grubenv
+if [ -n "${root}" ]; then
+  load_env -f ($root)/grubenv
+  echo "BIOS GRUB: loaded grubenv from ($root) (state=${state_label})"
+fi
+# Recovery cmdline as a FALLBACK: the ESP grub.cfg loads /grub_oem_env
+# (which ships a kernelcmd pre-expanded at build time with EMPTY labels)
+# when it takes over, overwriting this value again. The authoritative
+# override is /grubcustom/custom.cfg injected into the ESP below (step 4),
+# which Elemental's grub.cfg sources AFTER all env loads. This one only
+# survives if the env does not define kernelcmd at all.
+set kernelcmd="console=tty1 console=ttyS0 root=LABEL=COS_RECOVERY rw elemental.image=/boot/recovery.img elemental.mode=recovery elemental.oemlabel=COS_OEM security=selinux selinux=0 rd.neednet=1"
+echo "BIOS GRUB: searching for guest grub.cfg ..."
+# Elemental keeps its real grub.cfg on the EFI System Partition
+search --no-floppy --set=root --file /EFI/elemental/grub.cfg
+if [ -n "${root}" ]; then
+  set prefix=($root)/EFI/elemental
+  configfile ($root)/EFI/elemental/grub.cfg
+fi
+echo "BIOS GRUB: /EFI/elemental/grub.cfg not found, trying /boot/grub2 ..."
 search --no-floppy --set=root --file /boot/grub2/grub.cfg
 if [ -n "${root}" ]; then
   set prefix=($root)/boot/grub2
@@ -129,4 +164,35 @@ EOG
     return 1
   fi
   log "[$SI] BIOS GRUB installed (core.img $CORE_SIZE B -> LBA $START, MBR kernel_sector patched)"
+
+  # 4. Inject /grubcustom/custom.cfg into the ESP (FAT via mtools, no mount).
+  #    Elemental's ESP grub.cfg sets custom_file=/grubcustom/custom.cfg and
+  #    sources it AFTER loading /grub_oem_env and BEFORE the menu entries --
+  #    the poisoned kernelcmd from the env (pre-expanded at build time with
+  #    empty labels) wins everywhere else, and this is the last place to
+  #    override it before the linux lines run.
+  command -v mcopy >/dev/null 2>&1 || { log "ERROR [$SI] mtools not found (install mtools in the container image)"; return 1; }
+  ESP_JSON=$(python3 "$BIOS_PY" "$RAW" --esp) || { log "ERROR [$SI] ESP partition lookup failed"; return 1; }
+  ESP_START=$(jq -r '.esp_start' <<<"$ESP_JSON")
+  ESP_OFF=$((ESP_START * 512))
+  cat > "$WORKDIR/grubcustom.cfg" <<'EOC'
+# Injected by do-exporter (bios-boot.sh): overrides the build-time kernelcmd
+# shipped in the OEM env, which has empty labels (root=LABEL= ...) and boots
+# to a dracut emergency shell. Any menuentry that sources bootargs.cfg
+# successfully rebuilds kernelcmd per-entry and overrides this again.
+set kernelcmd="console=tty1 console=ttyS0 root=LABEL=COS_RECOVERY rw elemental.image=/boot/recovery.img elemental.mode=recovery elemental.oemlabel=COS_OEM security=selinux selinux=0 rd.neednet=1"
+EOC
+  local esp_img="$RAW@@$ESP_OFF"
+  if ! mmd -i "$esp_img" ::/grubcustom >/dev/null 2>&1; then
+    log "[$SI] /grubcustom already present in ESP (reusing)"
+  fi
+  if ! mcopy -i "$esp_img" "$WORKDIR/grubcustom.cfg" ::/grubcustom/custom.cfg 2>&1; then
+    log "ERROR [$SI] failed to inject custom.cfg into the ESP"
+    return 1
+  fi
+  if ! mtype -i "$esp_img" ::/grubcustom/custom.cfg 2>/dev/null | grep -q "root=LABEL=COS_RECOVERY"; then
+    log "ERROR [$SI] custom.cfg verification failed (ESP injection inconsistent)"
+    return 1
+  fi
+  log "[$SI] ESP /grubcustom/custom.cfg injected (kernelcmd override, ESP at LBA $ESP_START)"
 }

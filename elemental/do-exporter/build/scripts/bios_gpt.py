@@ -27,9 +27,41 @@ def guid_raw(s):
     return packed + bytes.fromhex(p[16:])
 
 
+ESP_GUID = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
+
+
+def find_esp(img):
+    """Read-only: locate the EFI System Partition. Prints its JSON location."""
+    f = open(img, "rb")
+    f.seek(0)
+    mbr = f.read(SS)
+    if len(mbr) < SS or mbr[510:512] != b"\x55\xaa":
+        die(1, "no MBR boot signature (not a disk image?)")
+    if mbr[0x1c2:0x1c3] != b"\xee":
+        die(1, "no protective MBR (image is not GPT-partitioned)")
+    f.seek(SS)
+    hdr = f.read(SS)
+    if hdr[0:8] != b"EFI PART":
+        die(1, "no GPT header at LBA 1")
+    entry_lba, num_entries, entry_size, _pe_crc = struct.unpack("<QIII", hdr[72:92])
+    f.seek(entry_lba * SS)
+    entries_raw = f.read(num_entries * entry_size)
+    for i in range(num_entries):
+        e = entries_raw[i * entry_size:(i + 1) * entry_size]
+        if e[0:16] != b"\x00" * 16 and guid_str(e[0:16]) == ESP_GUID:
+            s, en = struct.unpack("<QQ", e[32:48])
+            print(json.dumps({"esp_start": s, "esp_end": en,
+                              "esp_sectors": en - s + 1}))
+            return
+    die(1, "no EFI System Partition found")
+
+
 def main():
+    if len(sys.argv) == 3 and sys.argv[2] == "--esp":
+        find_esp(sys.argv[1])
+        return
     if len(sys.argv) != 3:
-        die(1, "usage: bios_gpt.py <image> <min_gap_sectors>")
+        die(1, "usage: bios_gpt.py <image> <min_gap_sectors> | bios_gpt.py <image> --esp")
     img, min_gap = sys.argv[1], int(sys.argv[2])
 
     f = open(img, "r+b")
