@@ -17,7 +17,7 @@
 # (DO droplets boot SeaBIOS; UEFI-only images never boot there).
 set -euo pipefail
 
-SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/scripts" && pwd)"
+SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPTS_DIR/common.sh"
 source "$SCRIPTS_DIR/inventory.sh"
 source "$SCRIPTS_DIR/bios-boot.sh"

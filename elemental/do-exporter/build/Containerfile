@@ -41,6 +41,7 @@ RUN GOARCH="${TARGETARCH}" \
 RUN useradd -u 1000 -m -s /bin/bash publisher \
  && mkdir -p /work && chown 1000:1000 /work
 
+RUN mkdir -p /usr/local/bin/scripts/
 COPY scripts/ /usr/local/bin/scripts/
 RUN chmod +x /usr/local/bin/scripts/*.sh
 
