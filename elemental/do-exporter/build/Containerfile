@@ -24,13 +24,6 @@ RUN zypper -n addrepo -G -f -p 120 \
 
 RUN zypper -n --gpg-auto-import-keys ref
 
-# grub2-i386-pc only exists for x86_64 (BIOS boot is an x86 concept); DO
-# droplets are amd64, so skip the grub packages on arm64 builds.
-RUN GRUB_PKGS=""; [ "${TARGETARCH}" = "amd64" ] && GRUB_PKGS="grub2 grub2-i386-pc" \
- && zypper -n install --no-recommends \
-      ca-certificates curl jq qemu-tools s3cmd python3 gzip tar $GRUB_PKGS \
- && zypper clean -a
-
 # kubectl binary (arch-aware)
 RUN curl -sfL "https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
       -o /usr/local/bin/kubectl \
