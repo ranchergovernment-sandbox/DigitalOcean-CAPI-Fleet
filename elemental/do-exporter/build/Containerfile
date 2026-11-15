@@ -37,10 +37,22 @@ RUN curl -sfL "https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/${TARGETARCH}/
  && chmod +x /usr/local/bin/kubectl
 
 # doctl official static binary (not packaged for SLE 15; arch-aware)
-RUN GOARCH="${TARGETARCH}" \
- && curl -sfL "https://github.com/digitalocean/doctl/releases/download/v${DOCTL_VERSION}/doctl-${DOCTL_VERSION}-linux-${GOARCH}.tar.gz" \
-      | tar -xz -C /usr/local/bin doctl \
- && chmod +x /usr/local/bin/doctl
+RUN zypper -n install --no-recommends ca-certificates
+RUN zypper -n install --no-recommends curl
+RUN zypper -n install --no-recommends jq
+RUN zypper -n install --no-recommends qemu-tools
+RUN zypper -n install --no-recommends s3cmd
+RUN zypper -n install --no-recommends python3
+RUN zypper -n install --no-recommends gzip
+RUN zypper -n install --no-recommends tar
+RUN zypper -n install --no-recommends mtools   # FAT inject for custom.cfg
+
+# grub2 + grub2-i386-pc: amd64 only (BIOS patch; DO droplets are amd64)
+RUN if [ "${TARGETARCH}" = "amd64" ]; then \
+      zypper -n install --no-recommends grub2; \
+      zypper -n install --no-recommends grub2-i386-pc; \
+    fi
+RUN zypper clean -a
 
 # non-root runtime user (numeric UID: runAsNonRoot admission checks the image USER)
 RUN useradd -u 1000 -m -s /bin/bash publisher \
