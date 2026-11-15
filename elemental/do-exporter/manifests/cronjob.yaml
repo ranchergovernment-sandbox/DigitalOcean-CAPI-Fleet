@@ -29,6 +29,7 @@ spec:
                   drop:
                     - ALL
               image: "ghcr.io/ranchergovernment-sandbox/digitalocean-capi-fleet/do-seedimage-publisher"
+              imagePullPolicy: Always
               envFrom:
                 - configMapRef:
                     name: do-seedimage-publisher-config
