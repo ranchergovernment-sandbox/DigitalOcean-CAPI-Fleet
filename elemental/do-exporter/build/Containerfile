@@ -2,7 +2,7 @@ FROM registry.suse.com/bci/bci-base:15.6
 
 # buildx fills TARGETARCH automatically (amd64 / arm64)
 ARG TARGETARCH
-ARG K8S_VERSION=v1.31.0
+ARG K8S_VERSION=v1.36.6
 ARG DOCTL_VERSION=1.114.0
 
 # Cloud:Tools (s3cmd) — no SLE_15_SP6 build of this repo exists; the SP5 rpm
@@ -28,6 +28,11 @@ RUN zypper -n --gpg-auto-import-keys ref
 RUN curl -sfL "https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
       -o /usr/local/bin/kubectl \
  && chmod +x /usr/local/bin/kubectl
+
+RUN GOARCH="${TARGETARCH}" \
+ && curl -sfL "https://github.com/digitalocean/doctl/releases/download/v${DOCTL_VERSION}/doctl-${DOCTL_VERSION}-linux-${GOARCH}.tar.gz" \
+      | tar -xz -C /usr/local/bin doctl \
+ && chmod +x /usr/local/bin/doctl
 
 # doctl official static binary (not packaged for SLE 15; arch-aware)
 RUN zypper -n install --no-recommends ca-certificates
