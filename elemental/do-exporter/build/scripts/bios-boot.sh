@@ -293,3 +293,4 @@ function set_loopdevice {
   fi
   loopback ${volume} ${1}
 }
+EOM
