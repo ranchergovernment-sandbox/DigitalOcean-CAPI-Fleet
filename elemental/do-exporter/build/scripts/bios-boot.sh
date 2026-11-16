@@ -38,19 +38,15 @@
 #      devices via /sys/block and fails in containers that cannot see the
 #      node's device nodes (e.g. "failed to get canonical path of
 #      /dev/nvme0n1p4").
-#   4. Elemental's ESP grub.cfg loads /grub_oem_env, which ships ALL menu
-#      variables (labels, kernel, initramfs, kernelcmd) pre-expanded at BUILD
-#      time with EMPTY values: recovery entry does `search --label --set=root
-#      ${recovery_label}` with an empty label and `linux (${root})${kernel}`
-#      with no kernel -> "you need to load the kernel first" (confirmed on a
-#      droplet: full GRUB menu appears but entries fail to boot). The env
-#      load happens INSIDE Elemental's own grub.cfg, so the only override
-#      point left is the /grubcustom/custom.cfg hook it sources after all
-#      env loads and before the menu entries. We inject that file into the
-#      ESP with mtools (FAT, no mounting) redefining ALL variables:
-#      labels, kernel=/boot/vmlinuz, initramfs=/boot/initrd (symlinks on the
-#      recovery partition; GRUB follows symlinks) and the proven recovery
-#      kernelcmd.
+#   4. Elemental's ESP grub.cfg loads /grub_oem_env, which ships a kernelcmd
+#      pre-expanded at BUILD time with empty labels (root=LABEL=,
+#      elemental.mode= ...): that poisoned value boots into dracut
+#      emergency mode. The env load happens INSIDE Elemental's own grub.cfg,
+#      so the only override point left is the /grubcustom/custom.cfg hook it
+#      sources after all env loads and before the menu entries. We inject
+#      that file into the ESP with mtools (FAT, no mounting) with the proven
+#      recovery cmdline; menuentries that successfully source bootargs.cfg
+#      rebuild kernelcmd per-entry afterwards.
 # Container needs: python3, grub2-mkimage, the grub2 i386-pc modules and
 # mtools for the ESP custom.cfg injection (Containerfile installs
 # grub2 + grub2-i386-pc + mtools on amd64).
@@ -67,8 +63,7 @@ add_elemental_partitions() { # add_elemental_partitions <raw-image> (logs via $S
   local RAW="$1" RES ALREADY ST_OFF ST_SEC ST_LBA PER_OFF PER_SEC PER_LBA
   local state_gib="${STATE_SIZE_GIB:-8}" persistent_gib="${PERSISTENT_SIZE_GIB:-1}"
   command -v mke2fs >/dev/null 2>&1 || { log "ERROR [$SI] mke2fs not found (install e2fsprogs in the container image)"; return 1; }
-  RES=$(python3 "$BIOS_PY" "$RAW" --add-elemental-parts "$state_gib" "$persistent_gib") \
-    || { log "ERROR [$SI] elemental state/persistent partition carving failed"; return 1; }
+  RES=$(python3 "$BIOS_PY" "$RAW" --add-elemental-parts "$state_gib" "$persistent_gib")     || { log "ERROR [$SI] elemental state/persistent partition carving failed"; return 1; }
   ALREADY=$(jq -r '.already // false' <<<"$RES")
   if [ "$ALREADY" = "true" ]; then
     log "[$SI] state/persistent partitions already present (skipping)"
@@ -293,4 +288,110 @@ function set_loopdevice {
   fi
   loopback ${volume} ${1}
 }
+## Sources bootargs from the current volume
+function source_bootargs {
+  if [ -f "(${volume})/etc/cos/bootargs.cfg" ]; then
+    source "(${volume})/etc/cos/bootargs.cfg"
+  fi
+  if [ -f "(${volume})/etc/elemental/bootargs.cfg" ]; then
+    source "(${volume})/etc/elemental/bootargs.cfg"
+  fi
+}
+## Defines the volume and image to boot from for active or passive boots
+function set_volume {
+  if [ "${snapshotter}" == "btrfs" ]; then
+    set btrfs_relative_path="y"
+    set volume="${root}"
+    if [ -n "${1}" ]; then
+      set img="@/.snapshots/${1}/snapshot"
+      btrfs-mount-subvol (${root}) / ${img}
+    fi
+  elif [ -z "${1}" ]; then
+    set_loopdevice /.snapshots/active
+  else
+    set img=".snapshots/${1}/snapshot.img"
+    set_loopdevice ${img}
+  fi
+}
+menuentry "${display_name}" --id active {
+  set mode=active
+  search --no-floppy --label --set=root ${state_label}
+  set_volume
+  source_bootargs
+  linux (${volume})${kernel} ${kernelcmd} ${extra_cmdline} ${extra_active_cmdline}
+  initrd (${volume})${initramfs}
+}
+for passive_snap in ${passive_snaps}; do
+    menuentry "${display_name} (snapshot ${passive_snap})" --id passive${passive_snap} {
+        set root=${passive_snap}
+        set mode=passive
+        search --no-floppy --label --set=root ${state_label}
+        set_volume ${passive_snap}
+        source_bootargs
+        linux (${volume})${kernel} ${kernelcmd} ${extra_cmdline} ${extra_passive_cmdline}
+        initrd (${volume})${initramfs}
+    }
+done
+menuentry "${display_name} recovery" --id recovery {
+    set mode=recovery
+    search --no-floppy --label --set=root ${recovery_label}
+    # Check the presence of the image and fallback to legacy path if not present
+    set img=/boot/recovery.img
+    if [ -f "${img}" ]; then
+        if [ -f "(${root})/boot/bootargs.cfg" ]; then
+            source "(${root})/boot/bootargs.cfg"
+        fi
+        linux (${root})${kernel} ${kernelcmd} ${extra_cmdline} ${extra_recovery_cmdline}
+        initrd (${root})${initramfs}
+    else
+        # Boot using legacy recovery system, everything is included in the loopback image.
+        set img=/cOS/recovery.img
+        set_loopdevice ${img}
+        source_bootargs
+        linux (${volume})${kernel} ${kernelcmd} ${extra_cmdline} ${extra_recovery_cmdline}
+        initrd (${volume})${initramfs}
+    fi
+}
 EOM
+  cat > "$WORKDIR/grubcustom.cfg" <<'EOC'
+# Injected by do-exporter (bios-boot.sh): the build-time /grub_oem_env ships
+# variables PRE-EXPANDED with EMPTY labels (root=LABEL=, ${recovery_label}=,
+# ${kernel}= ...), so the menuentries search for a device with an empty label,
+# resolve ${kernel} to nothing, and fail with "you need to load the kernel
+# first". Elemental's chain sources this file AFTER loading /grub_oem_env and
+# BEFORE the menuentries run, so redefining the variables here fixes every
+# entry. Paths are relative to the partition each entry's search --set=root
+# selects (recovery partition gpt3, COS_RECOVERY): /boot/vmlinuz and
+# /boot/initrd are symlinks there; GRUB follows symlinks (validated on a
+# real droplet).
+set state_label=COS_STATE
+set recovery_label=COS_RECOVERY
+set oem_label=COS_OEM
+set persistent_label=COS_PERSISTENT
+set kernel=/boot/vmlinuz
+set initramfs=/boot/initrd
+set kernelcmd="console=tty1 console=ttyS0 root=LABEL=COS_RECOVERY rw elemental.image=/boot/recovery.img elemental.mode=recovery elemental.oemlabel=COS_OEM security=selinux selinux=0 rd.neednet=1"
+EOC
+  local esp_img="$RAW@@$ESP_OFF"
+  if ! mmd -i "$esp_img" ::/grubcustom ::/boot/grub2 >/dev/null 2>&1; then
+    log "[$SI] /grubcustom or /boot/grub2 already present in ESP (reusing)"
+  fi
+  if ! mcopy -i "$esp_img" "$WORKDIR/grub2.cfg" ::/boot/grub2/grub.cfg 2>&1; then
+    log "ERROR [$SI] failed to inject grub.cfg into the ESP /boot/grub2"
+    return 1
+  fi
+  if ! mcopy -i "$esp_img" "$WORKDIR/grubcustom.cfg" ::/grubcustom/custom.cfg 2>&1; then
+    log "ERROR [$SI] failed to inject custom.cfg into the ESP"
+    return 1
+  fi
+  if ! mtype -i "$esp_img" ::/boot/grub2/grub.cfg 2>/dev/null | grep -q "menuentry .*recovery"; then
+    log "ERROR [$SI] grub.cfg verification failed (recovery menuentry missing)"
+    return 1
+  fi
+  if ! mtype -i "$esp_img" ::/grubcustom/custom.cfg 2>/dev/null | grep -q "recovery_label=COS_RECOVERY" \
+     || ! mtype -i "$esp_img" ::/grubcustom/custom.cfg 2>/dev/null | grep -q "root=LABEL=COS_RECOVERY"; then
+    log "ERROR [$SI] custom.cfg verification failed (ESP injection inconsistent)"
+    return 1
+  fi
+  log "[$SI] ESP configs injected: /boot/grub2/grub.cfg (Elemental default chain, console-rendered) + /grubcustom/custom.cfg (var overrides; ESP at LBA $ESP_START)"
+}
