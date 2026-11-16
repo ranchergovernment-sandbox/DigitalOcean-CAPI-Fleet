@@ -10,6 +10,15 @@
 #      the GPT structures (end at LBA 33) and the first partition
 #      (elemental images start their EFI partition at LBA 2048, leaving
 #      LBA 34..2047 free) and fixes all GPT CRCs. Idempotent.
+#   1b. Elemental state/persistent partitions: the seed image ships only
+#       ESP/OEM/RECOVERY, but elemental-rootfs.service unconditionally
+#       mounts /dev/disk/by-partlabel/persistent -> emergency mode on a
+#       fresh disk. bios_gpt.py --add-elemental-parts grows the image and
+#       appends GPT partitions NAMED `state`/`persistent` (that is what
+#       /dev/disk/by-partlabel matches), then mke2fs -E offset creates the
+#       ext4 filesystems with labels COS_STATE/COS_PERSISTENT. Sizes via
+#       STATE_SIZE_GIB (default 8) and PERSISTENT_SIZE_GIB (default 1);
+#       empty ext4 compresses to ~nothing in the qcow2 upload.
 #   2. grub2-mkimage builds an i386-pc core.img whose embedded early config
 #      locates the guest's own /boot/grub2/grub.cfg (elemental's grub.cfg
 #      is platform-aware, so under BIOS it uses the plain `linux` command).
@@ -26,15 +35,19 @@
 #      devices via /sys/block and fails in containers that cannot see the
 #      node's device nodes (e.g. "failed to get canonical path of
 #      /dev/nvme0n1p4").
-#   4. Elemental's ESP grub.cfg loads /grub_oem_env, which ships a kernelcmd
-#      pre-expanded at BUILD time with empty labels (root=LABEL=,
-#      elemental.mode= ...): that poisoned value boots into dracut
-#      emergency mode. The env load happens INSIDE Elemental's own grub.cfg,
-#      so the only override point left is the /grubcustom/custom.cfg hook it
-#      sources after all env loads and before the menu entries. We inject
-#      that file into the ESP with mtools (FAT, no mounting) with the proven
-#      recovery cmdline; menuentries that successfully source bootargs.cfg
-#      rebuild kernelcmd per-entry afterwards.
+#   4. Elemental's ESP grub.cfg loads /grub_oem_env, which ships ALL menu
+#      variables (labels, kernel, initramfs, kernelcmd) pre-expanded at BUILD
+#      time with EMPTY values: recovery entry does `search --label --set=root
+#      ${recovery_label}` with an empty label and `linux (${root})${kernel}`
+#      with no kernel -> "you need to load the kernel first" (confirmed on a
+#      droplet: full GRUB menu appears but entries fail to boot). The env
+#      load happens INSIDE Elemental's own grub.cfg, so the only override
+#      point left is the /grubcustom/custom.cfg hook it sources after all
+#      env loads and before the menu entries. We inject that file into the
+#      ESP with mtools (FAT, no mounting) redefining ALL variables:
+#      labels, kernel=/boot/vmlinuz, initramfs=/boot/initrd (symlinks on the
+#      recovery partition; GRUB follows symlinks) and the proven recovery
+#      kernelcmd.
 # Container needs: python3, grub2-mkimage, the grub2 i386-pc modules and
 # mtools for the ESP custom.cfg injection (Containerfile installs
 # grub2 + grub2-i386-pc + mtools on amd64).
@@ -45,6 +58,36 @@ BIOS_GRUB_PY="${SCRIPTS_DIR}/bios_grub.py"
 
 bios_partition() { # bios_partition <raw-image> -> echoes "start end sectors"
   python3 "$BIOS_PY" "$1" 512 | jq -r '"\(.start) \(.end) \(.size_sectors)"'
+}
+
+add_elemental_partitions() { # add_elemental_partitions <raw-image> (logs via $SI)
+  local RAW="$1" RES ALREADY ST_OFF ST_SEC ST_LBA PER_OFF PER_SEC PER_LBA
+  local state_gib="${STATE_SIZE_GIB:-8}" persistent_gib="${PERSISTENT_SIZE_GIB:-1}"
+  command -v mke2fs >/dev/null 2>&1 || { log "ERROR [$SI] mke2fs not found (install e2fsprogs in the container image)"; return 1; }
+  RES=$(python3 "$BIOS_PY" "$RAW" --add-elemental-parts "$state_gib" "$persistent_gib") \
+    || { log "ERROR [$SI] elemental state/persistent partition carving failed"; return 1; }
+  ALREADY=$(jq -r '.already // false' <<<"$RES")
+  if [ "$ALREADY" = "true" ]; then
+    log "[$SI] state/persistent partitions already present (skipping)"
+    return 0
+  fi
+  ST_OFF=$(jq -r '.state.offset_bytes' <<<"$RES")
+  ST_SEC=$(jq -r '.state.sectors' <<<"$RES")
+  ST_LBA=$(jq -r '.state.start' <<<"$RES")
+  PER_OFF=$(jq -r '.persistent.offset_bytes' <<<"$RES")
+  PER_SEC=$(jq -r '.persistent.sectors' <<<"$RES")
+  PER_LBA=$(jq -r '.persistent.start' <<<"$RES")
+  # mke2fs -E offset formats a region INSIDE the raw image, no mounting;
+  # explicit -b 4096 makes the size argument unambiguous (fs blocks).
+  if ! mke2fs -q -t ext4 -b 4096 -F -L COS_STATE -E offset="$ST_OFF" "$RAW" $(( ST_SEC * 512 / 4096 )); then
+    log "ERROR [$SI] mkfs COS_STATE failed"
+    return 1
+  fi
+  if ! mke2fs -q -t ext4 -b 4096 -F -L COS_PERSISTENT -E offset="$PER_OFF" "$RAW" $(( PER_SEC * 512 / 4096 )); then
+    log "ERROR [$SI] mkfs COS_PERSISTENT failed"
+    return 1
+  fi
+  log "[$SI] Elemental partitions: state ${state_gib}GiB @LBA $ST_LBA (ext4 COS_STATE), persistent ${persistent_gib}GiB @LBA $PER_LBA (ext4 COS_PERSISTENT)"
 }
 
 add_bios_boot() { # add_bios_boot <raw-image> (logs via $SI)
@@ -68,6 +111,13 @@ add_bios_boot() { # add_bios_boot <raw-image> (logs via $SI)
   RES=$(bios_partition "$RAW") || { log "ERROR [$SI] BIOS partition creation failed"; return 1; }
   read -r START END SECTORS <<<"$RES"
   log "[$SI] BIOS Boot partition: LBA $START..$END ($SECTORS sectors)"
+
+  # 1b. Elemental state/persistent partitions (see header): required by
+  #     elemental-rootfs.service, missing from the shipped seed image.
+  if ! add_elemental_partitions "$RAW"; then
+    log "ERROR [$SI] elemental partition step failed"
+    return 1
+  fi
 
   # 2. core.img with embedded early config
   cat > "$WORKDIR/bios-early.cfg" <<'EOG'
@@ -167,19 +217,32 @@ EOG
 
   # 4. Inject /grubcustom/custom.cfg into the ESP (FAT via mtools, no mount).
   #    Elemental's ESP grub.cfg sets custom_file=/grubcustom/custom.cfg and
-  #    sources it AFTER loading /grub_oem_env and BEFORE the menu entries --
-  #    the poisoned kernelcmd from the env (pre-expanded at build time with
-  #    empty labels) wins everywhere else, and this is the last place to
-  #    override it before the linux lines run.
+  #    sources it AFTER loading /grub_oem_env and BEFORE the menu entries.
+  #    The build-time /grub_oem_env ships EVERY variable pre-expanded with
+  #    EMPTY values (recovery_label=, kernel=, kernelcmd="root=LABEL= ..."),
+  #    so menuentries do `search --label --set=root ${recovery_label}` with an
+  #    empty label and `linux (${root})${kernel}` with no kernel ("you need
+  #    to load the kernel first"). custom.cfg redefines ALL of them.
   command -v mcopy >/dev/null 2>&1 || { log "ERROR [$SI] mtools not found (install mtools in the container image)"; return 1; }
   ESP_JSON=$(python3 "$BIOS_PY" "$RAW" --esp) || { log "ERROR [$SI] ESP partition lookup failed"; return 1; }
   ESP_START=$(jq -r '.esp_start' <<<"$ESP_JSON")
   ESP_OFF=$((ESP_START * 512))
   cat > "$WORKDIR/grubcustom.cfg" <<'EOC'
-# Injected by do-exporter (bios-boot.sh): overrides the build-time kernelcmd
-# shipped in the OEM env, which has empty labels (root=LABEL= ...) and boots
-# to a dracut emergency shell. Any menuentry that sources bootargs.cfg
-# successfully rebuilds kernelcmd per-entry and overrides this again.
+# Injected by do-exporter (bios-boot.sh): the build-time /grub_oem_env ships
+# variables PRE-EXPANDED with EMPTY labels (root=LABEL=, ${recovery_label}=,
+# ${kernel}= ...), so the menuentries search for a device with an empty label,
+# resolve ${kernel} to nothing, and fail with "you need to load the kernel
+# first". Elemental sources this file AFTER loading /grub_oem_env and BEFORE
+# the menuentries run, so redefining the variables here fixes every entry.
+# Paths are relative to the partition the entry's search --set=root selects
+# (recovery partition gpt3, COS_RECOVERY): /boot/vmlinuz and /boot/initrd
+# are symlinks there; GRUB follows symlinks (validated on a real droplet).
+set state_label=COS_STATE
+set recovery_label=COS_RECOVERY
+set oem_label=COS_OEM
+set persistent_label=COS_PERSISTENT
+set kernel=/boot/vmlinuz
+set initramfs=/boot/initrd
 set kernelcmd="console=tty1 console=ttyS0 root=LABEL=COS_RECOVERY rw elemental.image=/boot/recovery.img elemental.mode=recovery elemental.oemlabel=COS_OEM security=selinux selinux=0 rd.neednet=1"
 EOC
   local esp_img="$RAW@@$ESP_OFF"
@@ -190,9 +253,10 @@ EOC
     log "ERROR [$SI] failed to inject custom.cfg into the ESP"
     return 1
   fi
-  if ! mtype -i "$esp_img" ::/grubcustom/custom.cfg 2>/dev/null | grep -q "root=LABEL=COS_RECOVERY"; then
+  if ! mtype -i "$esp_img" ::/grubcustom/custom.cfg 2>/dev/null | grep -q "recovery_label=COS_RECOVERY" \
+     || ! mtype -i "$esp_img" ::/grubcustom/custom.cfg 2>/dev/null | grep -q "root=LABEL=COS_RECOVERY"; then
     log "ERROR [$SI] custom.cfg verification failed (ESP injection inconsistent)"
     return 1
   fi
-  log "[$SI] ESP /grubcustom/custom.cfg injected (kernelcmd override, ESP at LBA $ESP_START)"
+  log "[$SI] ESP /grubcustom/custom.cfg injected (grub env var overrides: labels, kernel, initramfs, kernelcmd; ESP at LBA $ESP_START)"
 }

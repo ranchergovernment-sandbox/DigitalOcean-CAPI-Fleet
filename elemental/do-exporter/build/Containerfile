@@ -2,7 +2,7 @@ FROM registry.suse.com/bci/bci-base:15.6
 
 # buildx fills TARGETARCH automatically (amd64 / arm64)
 ARG TARGETARCH
-ARG K8S_VERSION=v1.36.6
+ARG K8S_VERSION=v1.31.0
 ARG DOCTL_VERSION=1.114.0
 
 # Cloud:Tools (s3cmd) — no SLE_15_SP6 build of this repo exists; the SP5 rpm
@@ -11,30 +11,13 @@ ARG DOCTL_VERSION=1.114.0
 # zypper treats the URI as a baseurl and stores it verbatim, so using the
 # Cloud:Tools.repo URL makes the refresh fail with
 # "Repository type can't be determined" (exit code 4).
-RUN zypper -n addrepo -G -f https://download.opensuse.org/repositories/Cloud:/Tools/SLE_15_SP5/ cloud-tools
-
-# grub2 is NOT in the trimmed SLE-BCI product repo (it lives in the SLES
-# Basesystem module BCI doesn't ship), so "zypper install grub2" fails with
-# "package not found". openSUSE Leap 15.6 is binary-compatible with
-# SLE 15 SP6 and carries grub2 2.12 + grub2-i386-pc (which hard-requires the
-# exact same grub2 version, so both come from here). Added at a lower
-# priority so the BCI repo stays the default for everything else.
 RUN zypper -n addrepo -G -f -p 120 \
       https://download.opensuse.org/distribution/leap/15.6/repo/oss/ leap-oss
-
+RUN zypper -n addrepo -G -f https://download.opensuse.org/repositories/Cloud:/Tools/SLE_15_SP5/ cloud-tools
 RUN zypper -n --gpg-auto-import-keys ref
 
-# kubectl binary (arch-aware)
-RUN curl -sfL "https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
-      -o /usr/local/bin/kubectl \
- && chmod +x /usr/local/bin/kubectl
-
-RUN GOARCH="${TARGETARCH}" \
- && curl -sfL "https://github.com/digitalocean/doctl/releases/download/v${DOCTL_VERSION}/doctl-${DOCTL_VERSION}-linux-${GOARCH}.tar.gz" \
-      | tar -xz -C /usr/local/bin doctl \
- && chmod +x /usr/local/bin/doctl
-
-# doctl official static binary (not packaged for SLE 15; arch-aware)
+# One package per RUN: a failing install names the exact package in the
+# build log instead of burying it at the end of a && chain.
 RUN zypper -n install --no-recommends ca-certificates
 RUN zypper -n install --no-recommends curl
 RUN zypper -n install --no-recommends jq
@@ -43,19 +26,38 @@ RUN zypper -n install --no-recommends s3cmd
 RUN zypper -n install --no-recommends python3
 RUN zypper -n install --no-recommends gzip
 RUN zypper -n install --no-recommends tar
-RUN zypper -n install --no-recommends mtools   # FAT inject for custom.cfg
+# mtools: FAT access without mounting — used by bios-boot.sh to inject
+# /grubcustom/custom.cfg into the ESP of the raw disk image
+RUN zypper -n install --no-recommends mtools
+RUN zypper -n install --no-recommends e2fsprogs
 
-# grub2 + grub2-i386-pc: amd64 only (BIOS patch; DO droplets are amd64)
+# grub2 + grub2-i386-pc are only needed for the legacy-BIOS boot patch, and
+# DO droplets are amd64 — skip them on arm64 builds. NOTE: the conditional
+# MUST be a real `if` — `[ "${TARGETARCH}" = "amd64" ] && cmd` fails the
+# whole RUN with exit 1 on the arm64 leg because the false `[` test is the
+# last command executed.
 RUN if [ "${TARGETARCH}" = "amd64" ]; then \
       zypper -n install --no-recommends grub2; \
       zypper -n install --no-recommends grub2-i386-pc; \
     fi
 RUN zypper clean -a
 
+# kubectl binary (arch-aware)
+RUN curl -sfL "https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
+      -o /usr/local/bin/kubectl \
+ && chmod +x /usr/local/bin/kubectl
+
+# doctl official static binary (not packaged for SLE 15; arch-aware)
+RUN GOARCH="${TARGETARCH}" \
+ && curl -sfL "https://github.com/digitalocean/doctl/releases/download/v${DOCTL_VERSION}/doctl-${DOCTL_VERSION}-linux-${GOARCH}.tar.gz" \
+      | tar -xz -C /usr/local/bin doctl \
+ && chmod +x /usr/local/bin/doctl
+
 # non-root runtime user (numeric UID: runAsNonRoot admission checks the image USER)
 RUN useradd -u 1000 -m -s /bin/bash publisher \
  && mkdir -p /work && chown 1000:1000 /work
 
+RUN mkdir -p /usr/local/bin/scripts/
 COPY scripts/ /usr/local/bin/scripts/
 RUN chmod +x /usr/local/bin/scripts/*.sh
 
