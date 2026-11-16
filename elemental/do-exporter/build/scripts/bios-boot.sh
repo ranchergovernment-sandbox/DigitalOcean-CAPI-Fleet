@@ -373,8 +373,15 @@ set initramfs=/boot/initrd
 set kernelcmd="console=tty1 console=ttyS0 root=LABEL=COS_RECOVERY rw elemental.image=/boot/recovery.img elemental.mode=recovery elemental.oemlabel=COS_OEM security=selinux selinux=0 rd.neednet=1"
 EOC
   local esp_img="$RAW@@$ESP_OFF"
-  if ! mmd -i "$esp_img" ::/grubcustom ::/boot/grub2 >/dev/null 2>&1; then
-    log "[$SI] /grubcustom or /boot/grub2 already present in ESP (reusing)"
+  # mmd does NOT create parent directories: ::/boot/grub2 fails unless
+  # ::/boot exists first. Create each level; a failure then genuinely means
+  # the directory is already there.
+  mmd -i "$esp_img" ::/boot >/dev/null 2>&1 || true
+  if ! mmd -i "$esp_img" ::/boot/grub2 >/dev/null 2>&1; then
+    log "[$SI] /boot/grub2 already present in ESP (reusing)"
+  fi
+  if ! mmd -i "$esp_img" ::/grubcustom >/dev/null 2>&1; then
+    log "[$SI] /grubcustom already present in ESP (reusing)"
   fi
   if ! mcopy -i "$esp_img" "$WORKDIR/grub2.cfg" ::/boot/grub2/grub.cfg 2>&1; then
     log "ERROR [$SI] failed to inject grub.cfg into the ESP /boot/grub2"
