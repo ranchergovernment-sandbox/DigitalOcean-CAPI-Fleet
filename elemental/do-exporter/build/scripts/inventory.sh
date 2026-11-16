@@ -58,9 +58,15 @@ inventory_and_classify() {
     # queue 2+3 only matter if the DO image doesn't exist yet (images are immutable)
     if ! do_image_exists "${R_DOIMG[$SI]}"; then
       Q_CREATE+=("$SI")
-      if ! s3_object_exists "${R_DOIMG[$SI]}.qcow2" || [ "$BUILD_SEEN" != "$URL" ]; then
-        Q_UPLOAD+=("$SI")
-      fi
+      # Always re-publish the object alongside a (re)create: DO images are
+      # immutable, and a leftover Spaces object may be STALE — e.g. a broken
+      # artifact from an earlier run when the BIOS patch failed. Object
+      # existence + an unchanged downloadURL say nothing about whether the
+      # object content matches what THIS pipeline run would produce, and
+      # the DO import fetches the object as it exists at create time.
+      # Re-uploading is idempotent (patch/convert/put overwrite) and the
+      # only way to guarantee the registered image matches the fixed code.
+      Q_UPLOAD+=("$SI")
     fi
 
     # remember this build so Q_NEW only reports genuinely new builds
