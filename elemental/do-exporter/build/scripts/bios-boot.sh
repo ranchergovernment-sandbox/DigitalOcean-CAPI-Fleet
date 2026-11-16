@@ -20,8 +20,11 @@
 #       STATE_SIZE_GIB (default 8) and PERSISTENT_SIZE_GIB (default 1);
 #       empty ext4 compresses to ~nothing in the qcow2 upload.
 #   2. grub2-mkimage builds an i386-pc core.img whose embedded early config
-#      locates the guest's own /boot/grub2/grub.cfg (elemental's grub.cfg
-#      is platform-aware, so under BIOS it uses the plain `linux` command).
+#      sets root+prefix to the ESP and DROPS THROUGH to normal, which loads
+#      the injected /boot/grub2/grub.cfg (Elemental's default boot chain,
+#      console-rendered -- see step 4). Every command in the embedded
+#      config is guarded: GRUB scripts abort on the first failing command,
+#      which is what produced the bare grub> shell.
 #   3. bios_grub.py installs GRUB into the image file the way
 #      grub2-bios-setup would: it writes core.img into the BIOS Boot
 #      partition and — critically — PATCHES the LBA of core.img into the
@@ -121,60 +124,44 @@ add_bios_boot() { # add_bios_boot <raw-image> (logs via $SI)
 
   # 2. core.img with embedded early config
   cat > "$WORKDIR/bios-early.cfg" <<'EOG'
-# Early GRUB config embedded into core.img (i386-pc / BIOS). Try the known
-# Elemental/SUSE grub.cfg locations, then the COS_STATE label, then give up.
-# Output goes to BOTH VGA console (DO droplet web console) and COM1 serial
-# (local QEMU -serial / DO recovery console), so boot-stage failures are
-# visible wherever you look. Each search prints a marker so a silent death
-# tells you exactly which stage never ran.
-serial --unit=0 --speed=115200
-terminal_output console serial
-echo "BIOS GRUB: stage2 reached, loading elemental environment ..."
-# Elemental's menu entries are driven by variables from a grubenv file that
-# lives on the OEM partition. GRUB's normal auto-load only checks
-# ${prefix}/grubenv (which does not exist on the ESP), so WITHOUT this the
-# boot comes up with every variable empty: root=LABEL=, elemental.mode=,
-# elemental.oemlabel= ... and the kernel emergency-modes.
-search --no-floppy --set=root --file /grubenv
-if [ -n "${root}" ]; then
-  load_env -f ($root)/grubenv
-  echo "BIOS GRUB: loaded grubenv from ($root) (state=${state_label})"
-fi
-# Recovery cmdline as a FALLBACK: the ESP grub.cfg loads /grub_oem_env
-# (which ships a kernelcmd pre-expanded at build time with EMPTY labels)
-# when it takes over, overwriting this value again. The authoritative
-# override is /grubcustom/custom.cfg injected into the ESP below (step 4),
-# which Elemental's grub.cfg sources AFTER all env loads. This one only
-# survives if the env does not define kernelcmd at all.
-set kernelcmd="console=tty1 console=ttyS0 root=LABEL=COS_RECOVERY rw elemental.image=/boot/recovery.img elemental.mode=recovery elemental.oemlabel=COS_OEM security=selinux selinux=0 rd.neednet=1"
-echo "BIOS GRUB: searching for guest grub.cfg ..."
-# Elemental keeps its real grub.cfg on the EFI System Partition
-search --no-floppy --set=root --file /EFI/elemental/grub.cfg
-if [ -n "${root}" ]; then
-  set prefix=($root)/EFI/elemental
-  configfile ($root)/EFI/elemental/grub.cfg
-fi
-echo "BIOS GRUB: /EFI/elemental/grub.cfg not found, trying /boot/grub2 ..."
-search --no-floppy --set=root --file /boot/grub2/grub.cfg
-if [ -n "${root}" ]; then
+# Early GRUB config embedded into core.img (i386-pc / BIOS). CANONICAL pattern:
+# set root/prefix to our default-location config and DROP THROUGH -- after the
+# embedded config finishes, GRUB loads the normal module, which reads
+# ${prefix}/grub.cfg and shows the menu. We inject that grub.cfg (Elemental's
+# own default boot chain, console-rendered) onto the ESP at /boot/grub2/grub.cfg
+# -- the exact location the mkimage default prefix ($root)/boot/grub2 points at.
+# Elemental's real ESP config (EFI/elemental/grub.cfg) is NOT used: it loads
+# /grub_oem_env whose variables are pre-expanded EMPTY at image build, and it
+# renders its menu on gfxterm (invisible on SeaBIOS).
+# HARD RULES for embedded configs (learned the hard way):
+#   1. A GRUB script ABORTS on the first failing command. An unguarded
+#      `search` (file not found) or `serial` (init failure) kills the whole
+#      script -> default prefix, no variables, bare grub> shell.
+#   2. NO `serial`/`terminal_output` here: a failing serial init aborts the
+#      script before anything else runs (console ttyS0 for kernel output is
+#      already on the kernel cmdline; GRUB echoes go to the VGA console).
+#   3. Guards also on configfile calls: a config that errors mid-way must
+#      not abort the fallback chain.
+# Each stage prints a marker so a silent death says exactly where it stopped.
+echo "BIOS GRUB: stage2 reached"
+if search --no-floppy --set=root --file /boot/grub2/grub.cfg; then
   set prefix=($root)/boot/grub2
-  configfile ($root)/boot/grub2/grub.cfg
+  echo "BIOS GRUB: menu config at ($prefix); handing over to normal ..."
+# drop through: normal auto-loads ${prefix}/grub.cfg and shows the menu
+else
+  echo "BIOS GRUB: no /boot/grub2/grub.cfg; booting COS_RECOVERY directly ..."
+  if search --no-floppy --set=root --label COS_RECOVERY; then
+    linux ($root)/boot/vmlinuz console=tty1 console=ttyS0 root=LABEL=COS_RECOVERY rw elemental.image=/boot/recovery.img elemental.mode=recovery elemental.oemlabel=COS_OEM security=selinux selinux=0 rd.neednet=1
+    initrd ($root)/boot/initrd
+    boot
+  fi
+  echo "BIOS GRUB: COS_RECOVERY not found either, trying Elemental ESP config ..."
+  if search --no-floppy --set=root --file /EFI/elemental/grub.cfg; then
+    set prefix=($root)/EFI/elemental
+    if configfile ($root)/EFI/elemental/grub.cfg; then true; fi
+  fi
 fi
-echo "BIOS GRUB: /boot/grub2/grub.cfg not found, trying /grub2 ..."
-search --no-floppy --set=root --file /grub2/grub.cfg
-if [ -n "${root}" ]; then
-  set prefix=($root)/grub2
-  configfile ($root)/grub2/grub.cfg
-fi
-echo "BIOS GRUB: /grub2/grub.cfg not found, trying COS_STATE label ..."
-search --no-floppy --set=root --label COS_STATE
-if [ -n "${root}" ]; then
-  set prefix=($root)/boot/grub2
-  configfile ($root)/boot/grub2/grub.cfg
-fi
-echo "BIOS GRUB: no Elemental grub.cfg found; dropping to GRUB shell."
-search --no-floppy --set=root --file /boot/vmlinuz
-set prefix=($root)/boot/grub2
+echo "BIOS GRUB: no boot path found; dropping to GRUB shell."
 EOG
   "$mkimage" -d "$grub_pc_dir" -O i386-pc \
     -c "$WORKDIR/bios-early.cfg" -p '($root)/boot/grub2' \
@@ -215,48 +202,94 @@ EOG
   fi
   log "[$SI] BIOS GRUB installed (core.img $CORE_SIZE B -> LBA $START, MBR kernel_sector patched)"
 
-  # 4. Inject /grubcustom/custom.cfg into the ESP (FAT via mtools, no mount).
-  #    Elemental's ESP grub.cfg sets custom_file=/grubcustom/custom.cfg and
-  #    sources it AFTER loading /grub_oem_env and BEFORE the menu entries.
-  #    The build-time /grub_oem_env ships EVERY variable pre-expanded with
-  #    EMPTY values (recovery_label=, kernel=, kernelcmd="root=LABEL= ..."),
-  #    so menuentries do `search --label --set=root ${recovery_label}` with an
-  #    empty label and `linux (${root})${kernel}` with no kernel ("you need
-  #    to load the kernel first"). custom.cfg redefines ALL of them.
+  # 4. Inject the BIOS boot configs into the ESP (FAT via mtools, no mount):
+  #      /boot/grub2/grub.cfg  Elemental's DEFAULT boot chain, verbatim
+  #                           (env loads, next_entry one-shot, custom_file
+  #                           hook, active/passive/recovery menuentries,
+  #                           set_volume/source_bootargs) with ONE change:
+  #                           terminal_output console instead of gfxterm
+  #                           (gfxterm renders nothing on SeaBIOS). This is
+  #                           the "default location" the mkimage prefix
+  #                           points at, so root+prefix are all the early
+  #                           config must set.
+  #      /grubcustom/custom.cfg  the variable overrides: the build-time
+  #                           /grub_oem_env ships EVERY variable pre-expanded
+  #                           with EMPTY values (recovery_label=, kernel=,
+  #                           kernelcmd="root=LABEL= ..."), and Elemental's
+  #                           chain deliberately RELOADS it after the healthy
+  #                           grubenv -- so only the custom_file hook (which
+  #                           runs after all env loads, before menuentries)
+  #                           can fix them. Relative paths in the chain
+  #                           resolve against root=ESP, which the early
+  #                           config sets, so all file tests pass.
   command -v mcopy >/dev/null 2>&1 || { log "ERROR [$SI] mtools not found (install mtools in the container image)"; return 1; }
   ESP_JSON=$(python3 "$BIOS_PY" "$RAW" --esp) || { log "ERROR [$SI] ESP partition lookup failed"; return 1; }
   ESP_START=$(jq -r '.esp_start' <<<"$ESP_JSON")
   ESP_OFF=$((ESP_START * 512))
-  cat > "$WORKDIR/grubcustom.cfg" <<'EOC'
-# Injected by do-exporter (bios-boot.sh): the build-time /grub_oem_env ships
-# variables PRE-EXPANDED with EMPTY labels (root=LABEL=, ${recovery_label}=,
-# ${kernel}= ...), so the menuentries search for a device with an empty label,
-# resolve ${kernel} to nothing, and fail with "you need to load the kernel
-# first". Elemental sources this file AFTER loading /grub_oem_env and BEFORE
-# the menuentries run, so redefining the variables here fixes every entry.
-# Paths are relative to the partition the entry's search --set=root selects
-# (recovery partition gpt3, COS_RECOVERY): /boot/vmlinuz and /boot/initrd
-# are symlinks there; GRUB follows symlinks (validated on a real droplet).
-set state_label=COS_STATE
-set recovery_label=COS_RECOVERY
-set oem_label=COS_OEM
-set persistent_label=COS_PERSISTENT
-set kernel=/boot/vmlinuz
-set initramfs=/boot/initrd
-set kernelcmd="console=tty1 console=ttyS0 root=LABEL=COS_RECOVERY rw elemental.image=/boot/recovery.img elemental.mode=recovery elemental.oemlabel=COS_OEM security=selinux selinux=0 rd.neednet=1"
-EOC
-  local esp_img="$RAW@@$ESP_OFF"
-  if ! mmd -i "$esp_img" ::/grubcustom >/dev/null 2>&1; then
-    log "[$SI] /grubcustom already present in ESP (reusing)"
+  cat > "$WORKDIR/grub2.cfg" <<'EOM'
+# /boot/grub2/grub.cfg -- injected by do-exporter (do-seedimage-publisher).
+# Elemental's own default boot chain (captured verbatim from a built seed
+# image's EFI/elemental/grub.cfg), with two changes:
+#   1. terminal_output console instead of insmod all_video/gfxterm:
+#      gfxterm renders nothing on SeaBIOS droplets (invisible menu while
+#      the timeout still counts down).
+#   2. Everything else kept: /grub_oem_env load, OEM grubenv load + one-shot
+#      next_entry handling, custom_file hook, active/passive/recovery
+#      menuentries, set_volume/source_bootargs. The custom_file hook
+#      (/grubcustom/custom.cfg, also injected) redefines the variables the
+#      build-time env pre-expanded with EMPTY values.
+set timeout=10
+set env_file="/grubenv"
+set oem_env_file="/grub_oem_env"
+set custom_file="/grubcustom/custom.cfg"
+if [ -f "${oem_env_file}" ]; then
+  load_env -f "${oem_env_file}"
+fi
+# ${oem_label} is expected to be defined in ${oem_env_file}
+if search --no-floppy --set oem_blk --label "${oem_label}"; then
+  if [ -f "(${oem_blk})${env_file}" ]; then
+    load_env -f "(${oem_blk})${env_file}"
   fi
-  if ! mcopy -i "$esp_img" "$WORKDIR/grubcustom.cfg" ::/grubcustom/custom.cfg 2>&1; then
-    log "ERROR [$SI] failed to inject custom.cfg into the ESP"
-    return 1
+fi
+# Reload again ${oem_env_file} to prevent overwrites from ${env_file}
+if [ -f "${oem_env_file}" ]; then
+  load_env -f "${oem_env_file}"
+fi
+# Save default
+if [ "${next_entry}" ]; then
+  set default="${next_entry}"
+  set selected_entry="${next_entry}"
+  set next_entry=
+  if [ -f "(${oem_blk})${env_file}" ]; then
+    save_env -f "(${oem_blk})${env_file}" next_entry
   fi
-  if ! mtype -i "$esp_img" ::/grubcustom/custom.cfg 2>/dev/null | grep -q "recovery_label=COS_RECOVERY" \
-     || ! mtype -i "$esp_img" ::/grubcustom/custom.cfg 2>/dev/null | grep -q "root=LABEL=COS_RECOVERY"; then
-    log "ERROR [$SI] custom.cfg verification failed (ESP injection inconsistent)"
-    return 1
+else
+  set default="${saved_entry}"
+fi
+## Display a default menu entry if set
+if [ "${default_menu_entry}" ]; then
+  set display_name="${default_menu_entry}"
+else
+  set display_name="Elemental"
+fi
+## Set a default fallback if set
+if [ "${default_fallback}" ]; then
+  set fallback="${default_fallback}"
+else
+  set fallback="0 recovery"
+fi
+## Include custom file if any
+if [ -f "${custom_file}" ]; then
+  source "${custom_file}"
+fi
+terminal_output console
+insmod loopback
+insmod squash4
+## Sets a loopback device volume for a given image
+function set_loopdevice {
+  set volume="loop"
+  if [ -e "(${volume})" ]; then
+    loopback -d ${volume}
   fi
-  log "[$SI] ESP /grubcustom/custom.cfg injected (grub env var overrides: labels, kernel, initramfs, kernelcmd; ESP at LBA $ESP_START)"
+  loopback ${volume} ${1}
 }
